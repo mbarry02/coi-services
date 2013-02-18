@@ -43,7 +43,7 @@ class ScienceGranuleIngestionWorker(StreamCoverageReader):
         
         start_index = coverage.num_timesteps - elements
         slice_ = slice(start_index, None)
-        now = time.time() + 2208988800
+        now = time.time()
         coverage.set_parameter_values(param_name="ingestion_timestamp", tdoa=slice_, value=now)
         for k,v in rdt.iteritems():
             try:

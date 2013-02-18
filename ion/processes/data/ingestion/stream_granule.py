@@ -34,11 +34,10 @@ class StreamGranuleReader(StreamCoverageReader):
             log.error('received a message that is not a granule. %s' % msg)
             return
 
-        now = time.time() + 2208988800
+        now = time.time()
         start_index = coverage.num_timesteps - 1
         slice_ = slice(start_index, None)
         try:
-            coverage.set_parameter_values(param_name="time", tdoa=slice_, value=now)
             coverage.set_parameter_values(param_name="ingestion_timestamp", tdoa=slice_, value=now)
             coverage.set_parameter_values(param_name='granule', tdoa=slice_, value=granule.__dict__)
             coverage.set_parameter_values(param_name='granule_meta', tdoa=slice_, value=granule_meta)
