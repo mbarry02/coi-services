@@ -7,8 +7,6 @@ from pyon.event.event import handle_stream_exception
 import time
 
 class StreamGranuleReader(StreamCoverageReader):
-    def __init__(self, *args, **kwargs):
-        super(StreamGranuleReader, self).__init__(*args, **kwargs)
 
     @handle_stream_exception()
     def recv_packet(self, msg, stream_route, stream_id):

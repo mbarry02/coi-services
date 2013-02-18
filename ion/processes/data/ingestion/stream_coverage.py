@@ -2,13 +2,14 @@ from pyon.public import log, RT, PRED, CFG
 from pyon.core.exception import CorruptionError
 from ion.core.process.transform import TransformStreamListener, TransformStreamPublisher
 from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
+from pyon.container.cc import Container
 import collections
 
 class StreamCoverageCache(object):
     CACHE_LIMIT=CFG.get_safe('container.ingestion_cache',5)
     
     def __init__(self, container):
-        self.container = container
+        self.container = Container.instance
         self._datasets  = collections.OrderedDict()
         self._coverages = collections.OrderedDict()
         self._bad_coverages = {}
@@ -81,26 +82,26 @@ class StreamCoverageReader(TransformStreamListener):
     """  
     
     def on_start(self):
-        super(StreamCoverageReader,self).on_start()
+        TransformStreamListener.on_start(self)
         self.sc = StreamCoverageCache(self.container)
 
     def get_coverage(self, stream_id):
         return self.sc.get_coverage(stream_id)
     
     def on_quit(self):
-        super(StreamCoverageReader,self).on_quit()
+        TransformStreamListener.on_quit(self)
         self.sc.close()
 
 class StreamCoverageWriter(TransformStreamPublisher):
     #reads from a coverage and writes to a stream
     def on_start(self):
+        TransformStreamPublisher.on_start(self)
         self.sc = StreamCoverageCache(self.container)
-        super(StreamCoverageWriter, self).on_start()
 
     def get_coverage(self, stream_id):
         return self.sc.get_coverage(stream_id)
     
     def on_quit(self):
-        super(StreamCoverageWriter,self).on_quit()
+        TransformStreamPublisher.on_quit(self)
         self.sc.close()
 

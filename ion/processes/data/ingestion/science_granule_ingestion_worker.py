@@ -14,8 +14,6 @@ import time
 
 class ScienceGranuleIngestionWorker(StreamCoverageReader):
 
-    def __init__(self, *args,**kwargs):
-        super(ScienceGranuleIngestionWorker, self).__init__(*args, **kwargs)
     
     @handle_stream_exception()
     def recv_packet(self, msg, stream_route, stream_id):
