@@ -116,9 +116,9 @@ class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
         subscriber = StreamSubscriber(process=subproc, exchange_name=exchange_name, callback=cb)
         subscriber.xn.bind(stream_route.routing_key, self.container.proc_manager.procs[ppid].publisher.xp)
         subscriber.start()
-
+        
         #write slice
-        self.container.proc_manager.procs[ppid].write_data(stream_id, slice(0, 1))
+        self.container.proc_manager.procs[ppid].publish(slice(0, 1))
 
         self.assertTrue(e.wait(4))
         

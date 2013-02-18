@@ -3,13 +3,20 @@ from pyon.public import log
 from pyon.core.exception import CorruptionError
 from interface.objects import Granule
 from ion.processes.data.ingestion.stream_coverage import StreamCoverageReader, StreamCoverageWriter
+from pyon.event.event import handle_stream_exception
 import time
 
 class StreamGranuleReader(StreamCoverageReader):
     def __init__(self, *args, **kwargs):
         super(StreamGranuleReader, self).__init__(*args, **kwargs)
 
-    def process_data(self, coverage, msg):
+    @handle_stream_exception()
+    def recv_packet(self, msg, stream_route, stream_id):
+        if msg == {}:
+            log.error('Received empty message from stream: %s', stream_id)
+            return
+        coverage = self.sc.load_coverage(stream_id)    
+    
         timesteps = 1
         try:
             coverage.insert_timesteps(timesteps, oob=False)
@@ -46,11 +53,9 @@ class StreamGranuleReader(StreamCoverageReader):
 class StreamGranuleWriter(StreamCoverageWriter):
     
     def publish(self, msg, to=''):
-        self.publisher.publish(msg)
-
-    def write_data(self, stream_id, slice_):
         
-        coverage = self.sc.load_coverage(stream_id)
+        slice_ = msg
+        coverage = self.sc.load_coverage(self.stream_id)
          
         granules = coverage.get_parameter_values('granule', tdoa=slice_)
         gmetas = coverage.get_parameter_values('granule_meta', tdoa=slice_)
@@ -62,5 +67,5 @@ class StreamGranuleWriter(StreamCoverageWriter):
             gmetas = [gmetas]
 
         for gmeta,granule in zip(gmetas, granules):
-            self.publish((gmeta, granule))
+            self.publisher.publish((gmeta, granule))
 

@@ -1,6 +1,5 @@
 from pyon.public import log, RT, PRED, CFG
 from pyon.core.exception import CorruptionError
-from pyon.event.event import handle_stream_exception
 from ion.core.process.transform import TransformStreamListener, TransformStreamPublisher
 from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
 import collections
@@ -88,20 +87,6 @@ class StreamCoverageReader(TransformStreamListener):
     def get_coverage(self, stream_id):
         return self.sc.get_coverage(stream_id)
     
-    @handle_stream_exception()
-    def recv_packet(self, msg, stream_route, stream_id):
-        if msg == {}:
-            log.error('Received empty message from stream: %s', stream_id)
-            return
-        coverage = self.sc.load_coverage(stream_id)    
-        self.process_data(coverage, msg)
-    
-    def process_data(self, coverage, msg):
-        """
-        to be implemented by subclass
-        """
-        pass
-
     def on_quit(self):
         super(StreamCoverageReader,self).on_quit()
         self.sc.close()
@@ -114,12 +99,6 @@ class StreamCoverageWriter(TransformStreamPublisher):
 
     def get_coverage(self, stream_id):
         return self.sc.get_coverage(stream_id)
-    
-    def write_data(self, stream_id, slice_):
-        """
-        to be implemented by the subclass
-        """
-        raise NotImplementedError('Method write data not implemented')
     
     def on_quit(self):
         super(StreamCoverageWriter,self).on_quit()

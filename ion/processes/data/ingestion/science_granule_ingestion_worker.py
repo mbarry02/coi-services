@@ -9,13 +9,19 @@ from pyon.core.exception import CorruptionError
 from pyon.public import log
 from ion.processes.data.ingestion.stream_coverage import StreamCoverageReader
 from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTool
+from pyon.event.event import handle_stream_exception
 
 class ScienceGranuleIngestionWorker(StreamCoverageReader):
 
     def __init__(self, *args,**kwargs):
         super(ScienceGranuleIngestionWorker, self).__init__(*args, **kwargs)
     
-    def process_data(self, coverage, msg):
+    @handle_stream_exception()
+    def recv_packet(self, msg, stream_route, stream_id):
+        if msg == {}:
+            log.error('Received empty message from stream: %s', stream_id)
+            return
+        coverage = self.sc.load_coverage(stream_id)    
         rdt = RecordDictionaryTool.load_from_granule(msg)
         if rdt is None:
             return 
