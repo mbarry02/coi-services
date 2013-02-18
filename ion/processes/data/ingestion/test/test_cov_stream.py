@@ -6,13 +6,15 @@ from interface.objects import Granule
 from interface.services.dm.ipubsub_management_service import PubsubManagementServiceClient
 from interface.services.dm.idataset_management_service import DatasetManagementServiceClient
 from ion.services.dm.utility.granule_utils import time_series_domain
-from pyon.ion.stream import StreamPublisher, StreamSubscriber
-from pyon.ion.process import SimpleProcess
+from pyon.ion.stream import StandaloneStreamPublisher, StandaloneStreamSubscriber
+#from pyon.ion.process import SimpleProcess
 import gevent
 import unittest
 import os
 from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTool
 import numpy as np
+from pyon.util.poller import poll
+
 
 @attr('INT')
 class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
@@ -45,18 +47,19 @@ class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
         rdt['pressure'] = [43] * 10
         g = rdt.to_granule()
 
-        pubproc = SimpleProcess()
-        pubproc.id = "some_id"
-        pubproc.container = self.container
-        publisher = StreamPublisher(process=pubproc, stream_id=stream_id, stream_route=stream_route)
+        publisher = StandaloneStreamPublisher(stream_id, stream_route)
         self.container.proc_manager.procs[spid].subscriber.xn.bind(stream_route.routing_key, publisher.xp)
         publisher.publish(g)
         
-        gevent.sleep(3)
-
-        cov = self.container.proc_manager.procs[spid].get_coverage(stream_id)
-        time_data = cov.get_parameter_values('time')
-        self.assertEqual(set(time_data), set(np.arange(10)+1))
+        def verifier(*args, **kwargs):
+            cov = self.container.proc_manager.procs[spid].get_coverage(stream_id)
+            time_data = cov.get_parameter_values('time')
+            if set(time_data) == set(np.arange(10)+1):
+                return True
+            return False
+        
+        result = poll(verifier, timeout=10)
+        self.assertTrue(result)
     
     @attr('LOCOINT')
     @unittest.skipIf(os.getenv('CEI_LAUNCH_TEST', False), 'Host requires file-system access to coverage files, CEI mode does not support.')
@@ -66,10 +69,7 @@ class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
         spid = self.container.spawn_process('stream_subscriber','ion.processes.data.ingestion.stream_granule','StreamGranuleReader',{'process':{'queue_name':exchange_name}})
         (stream_def_id, stream_route, stream_id) = self._setup_stream('granule_params', stream_name, exchange_name)
         
-        pubproc = SimpleProcess()
-        pubproc.id = "some_id"
-        pubproc.container = self.container
-        publisher = StreamPublisher(process=pubproc, stream_id=stream_id, stream_route=stream_route)
+        publisher = StandaloneStreamPublisher(stream_id, stream_route)
         self.container.proc_manager.procs[spid].subscriber.xn.bind(stream_route.routing_key, publisher.xp)
        
         gmeta = {'something':'ok'}
@@ -79,11 +79,15 @@ class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
         g = Granule()
         publisher.publish((gmeta, g))
         
-        gevent.sleep(3)
-
-        cov = self.container.proc_manager.procs[spid].get_coverage(stream_id)
-        gdicts = cov.get_parameter_values('granule')
-        self.assertEqual(len(gdicts), 2)
+        def verifier(*args, **kwargs):
+            cov = self.container.proc_manager.procs[spid].get_coverage(stream_id)
+            gdicts = cov.get_parameter_values('granule')
+            if len(gdicts) == 2:
+                return True
+            return False
+        
+        result = poll(verifier, timeout=10)
+        self.assertTrue(result)
     
     @attr('LOCOINT')
     @unittest.skipIf(os.getenv('CEI_LAUNCH_TEST', False), 'Host requires file-system access to coverage files, CEI mode does not support.')
@@ -109,17 +113,12 @@ class StreamCoverageReaderWriterIntegrationTest(IonIntegrationTestCase):
             self.assertEqual(sid, stream_id)
             self.assertTrue(isinstance(msg[1], Granule))
             e.set()
-        
-        subproc = SimpleProcess()
-        subproc.id = 'some_sub_id'
-        subproc.container = self.container
-        subscriber = StreamSubscriber(process=subproc, exchange_name=exchange_name, callback=cb)
-        subscriber.xn.bind(stream_route.routing_key, self.container.proc_manager.procs[ppid].publisher.xp)
-        subscriber.start()
+        sub = StandaloneStreamSubscriber('stream_subscriber', cb)
+        sub.xn.bind(stream_route.routing_key, self.container.proc_manager.procs[ppid].publisher.xp)
+        self.addCleanup(sub.stop)
+        sub.start()
         
         #write slice
         self.container.proc_manager.procs[ppid].publish(slice(0, 1))
 
         self.assertTrue(e.wait(4))
-        
-        subscriber.stop()
