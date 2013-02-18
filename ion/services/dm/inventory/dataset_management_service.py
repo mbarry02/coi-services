@@ -21,6 +21,9 @@ from interface.objects import DataSet
 from interface.services.dm.idataset_management_service import BaseDatasetManagementService, DatasetManagementServiceClient
 
 from coverage_model.basic_types import AxisTypeEnum
+from coverage_model.parameter_types import QuantityType
+
+import numpy as np
 
 import os
 
@@ -50,7 +53,11 @@ class DatasetManagementService(BaseDatasetManagementService):
             pd = self.read_parameter_dictionary(parameter_dictionary_id)
             pcs = self.read_parameter_contexts(parameter_dictionary_id, id_only=False)
             parameter_dict = self._merge_contexts([ParameterContext.load(i.parameter_context) for i in pcs], pd.temporal_context)
-            parameter_dict = parameter_dict.dump()
+            ing_ctxt = ParameterContext('ingestion_timestamp', param_type=QuantityType(value_encoding=np.float32))
+            ing_ctxt.uom = 'seconds since 1970-01-01'
+            ing_ctxt.fill_value = 0x0
+            parameter_dict.add_context(ing_ctxt)
+            pdict = parameter_dict.dump()
 
         dataset                      = DataSet()
         dataset.description          = description
@@ -69,7 +76,7 @@ class DatasetManagementService(BaseDatasetManagementService):
             self.add_stream(dataset_id,stream_id)
 
 
-        cov = self._create_coverage(dataset_id, description or dataset_id, parameter_dict, spatial_domain, temporal_domain) 
+        cov = self._create_coverage(dataset_id, description or dataset_id, pdict, spatial_domain, temporal_domain) 
         self._save_coverage(cov)
         cov.close()
 

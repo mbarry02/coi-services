@@ -10,6 +10,7 @@ from pyon.public import log
 from ion.processes.data.ingestion.stream_coverage import StreamCoverageReader
 from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTool
 from pyon.event.event import handle_stream_exception
+import time
 
 class ScienceGranuleIngestionWorker(StreamCoverageReader):
 
@@ -38,10 +39,13 @@ class ScienceGranuleIngestionWorker(StreamCoverageReader):
             finally:
                 self.sc.mark_bad_coverage(coverage.name)
                 raise CorruptionError(e.message)
-
+        
+        
         start_index = coverage.num_timesteps - elements
+        slice_ = slice(start_index, None)
+        now = time.time() + 2208988800
+        coverage.set_parameter_values(param_name="ingestion_timestamp", tdoa=slice_, value=now)
         for k,v in rdt.iteritems():
-            slice_ = slice(start_index, None)
             try:
                 coverage.set_parameter_values(param_name=k, tdoa=slice_, value=v)
             except IOError as e:

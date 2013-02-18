@@ -26,7 +26,7 @@ class StreamGranuleReader(StreamCoverageReader):
             try:
                 coverage.close()
             finally:
-                self.sc.mark_bad_coverage(coverage.id)
+                self.sc.mark_bad_coverage(coverage.name)
                 raise CorruptionError(e.message)
         
         granule_meta,granule = msg
@@ -39,6 +39,7 @@ class StreamGranuleReader(StreamCoverageReader):
         slice_ = slice(start_index, None)
         try:
             coverage.set_parameter_values(param_name="time", tdoa=slice_, value=now)
+            coverage.set_parameter_values(param_name="ingestion_timestamp", tdoa=slice_, value=now)
             coverage.set_parameter_values(param_name='granule', tdoa=slice_, value=granule.__dict__)
             coverage.set_parameter_values(param_name='granule_meta', tdoa=slice_, value=granule_meta)
         except IOError as e:
@@ -47,7 +48,7 @@ class StreamGranuleReader(StreamCoverageReader):
             try:
                 coverage.close()
             finally:
-                self.sc.mark_bad_coverage(coverage.id)
+                self.sc.mark_bad_coverage(coverage.name)
                 raise CorruptionError(e.message)
     
 class StreamGranuleWriter(StreamCoverageWriter):
