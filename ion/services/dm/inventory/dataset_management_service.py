@@ -55,7 +55,7 @@ class DatasetManagementService(BaseDatasetManagementService):
             parameter_dict = self._merge_contexts([ParameterContext.load(i.parameter_context) for i in pcs], pd.temporal_context)
             ing_ctxt = ParameterContext('ingestion_timestamp', param_type=QuantityType(value_encoding=np.float32))
             ing_ctxt.uom = 'seconds since 1970-01-01'
-            ing_ctxt.fill_value = 0x0
+            ing_ctxt.fill_value = -9999
             parameter_dict.add_context(ing_ctxt)
             pdict = parameter_dict.dump()
 
