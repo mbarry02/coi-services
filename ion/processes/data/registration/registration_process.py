@@ -59,7 +59,7 @@ class RegistrationProcess(StandaloneProcess):
 
     def add_dataset_to_xml(self, coverage_path, product_name=''):
         dom1 = parse(self.datasets_xml_path)
-        xml_str = self.get_dataset_xml(coverage_path, product_name)
+        xml_str = self.get_dataset_xml(coverage_path, product_name, 'sequence')
         dom2 = parseString(xml_str)
 
         erddap_datasets_element = dom1.getElementsByTagName('erddapDatasets')[0]
@@ -68,7 +68,7 @@ class RegistrationProcess(StandaloneProcess):
         with open(self.datasets_xml_path, 'w') as f:
             dom1.writexml(f)
     
-    def get_errdap_name_map(self, names):
+    def get_erddap_name_map(self, names):
         result = {}
         for name in names:
             if 'lon' in name:
@@ -79,15 +79,15 @@ class RegistrationProcess(StandaloneProcess):
                 result[name] = name
         return result
 
-    def get_dataset_xml(self, coverage_path, product_name=''):
+    def get_dataset_xml(self, coverage_path, product_name='', erddap_data_type='grid'):
         #http://coastwatch.pfeg.noaa.gov/erddap/download/setupDatasetsXml.html
         result = ''
         paths = os.path.split(coverage_path)
         cov = SimplexCoverage.load(coverage_path)
         doc = xml.dom.minidom.Document()
-        
-        #erd_type_map = {'d':'double', 'f':"float", 'h':'short', 'i':'int', 'l':'int', 'q':'int', 'b':'byte', 'b':'char', 'S':'String'} 
-        
+       
+        erddap_data = {'grid':{'type':'EDDGridFromDap','cdm_data_type':'Grid'}, 'sequence':{'type':'EDDTableFromDapSequence','cdm_data_type':'Point'}}
+            
         #Get lists of variables with unique sets of dimensions.
         #Datasets can only have variables with the same sets of dimensions
 
@@ -96,7 +96,7 @@ class RegistrationProcess(StandaloneProcess):
 
         datasets = {}
         for key in cov.list_parameters():
-            pc = cov.get_parameter_context(key)
+            #pc = cov.get_parameter_context(key)
             
             #if not isinstance(pc.param_type, QuantityType):
             #    continue
@@ -118,14 +118,16 @@ class RegistrationProcess(StandaloneProcess):
             raise BadRequest('Attempting to register a dimensionless dataset. The coverage (%s) has no dimension(s).\n%s' %( coverage_path, cov))
         
         for dims, vars in datasets.iteritems():
-            erd_name_map = self.get_errdap_name_map(vars) 
+            erd_name_map = self.get_erddap_name_map(vars) 
             
             if len(vars)==1:
                 raise BadRequest('A dataset needs a proper range, not just the temporal dimension. %s\n%s' %( coverage_path, cov))
 
             if not (len(dims) == 1 and dims[0] == vars[0]):
                 dataset_element = doc.createElement('dataset')
-                dataset_element.setAttribute('type', 'EDDGridFromDap')
+                
+                dataset_element.setAttribute('type', erddap_data[erddap_data_type]['type'])
+                
                 dataset_element.setAttribute('datasetID', '{0}_{1}'.format(paths[1], index))
                 dataset_element.setAttribute('active', 'True')
 
@@ -139,6 +141,26 @@ class RegistrationProcess(StandaloneProcess):
                 reload_element.appendChild(text_node)
                 dataset_element.appendChild(reload_element)
                 
+                if erddap_data_type == 'sequence':
+                    element = doc.createElement('outerSequenceName')
+                    text_node = doc.createTextNode('data')
+                    element.appendChild(text_node)
+                    dataset_element.appendChild(element)
+                    
+                    element = doc.createElement('skipDapperSpacerRows')
+                    text_node = doc.createTextNode('false')
+                    element.appendChild(text_node)
+                    dataset_element.appendChild(element)
+                    
+                    element = doc.createElement('sourceCanConstrainStringEQNE')
+                    text_node = doc.createTextNode('true')
+                    element.appendChild(text_node)
+                    dataset_element.appendChild(element)
+                    
+                    element = doc.createElement('sourceCanConstrainStringGTLT')
+                    text_node = doc.createTextNode('true')
+                    element.appendChild(text_node)
+                    dataset_element.appendChild(element)
 
                 add_attributes_element = doc.createElement('addAttributes')
 
@@ -149,25 +171,10 @@ class RegistrationProcess(StandaloneProcess):
                 atts['Conventions'] = "COARDS, CF-1.6, Unidata Dataset Discovery v1.0"
                 atts['license'] = '[standard]'
                 atts['summary'] = cov.name
-                atts['cdm_data_type'] = 'Grid'
-                atts['subsetVariables'] = ','.join([erd_name_map[v] for v in vars])
+                atts['cdm_data_type'] = erddap_data[erddap_data_type]['cdm_data_type']
                 atts['standard_name_vocabulary'] = 'CF-12'
-                
-                try:
-                    lat_min,lat_max = cov.get_data_bounds("lat")
-                    atts['geospatial_lat_max'] = str(lat_max)
-                    atts['geospatial_lat_min'] = str(lat_min)
-                    pc = cov.get_parameter_context("lat")
-                    atts['geospatial_lat_units'] = str(pc.uom)
-                    
-                    lon_min,lon_max = cov.get_data_bounds("lon")
-                    atts['geospatial_lon_max'] = str(lon_max)
-                    atts['geospatial_lon_min'] = str(lon_min)
-                    pc = cov.get_parameter_context("lon")
-                    atts['geospatial_lon_units'] = str(pc.uom)
-                except:
-                    #silently fail and just don't fill attributes
-                    pass
+                if erddap_data_type == 'sequence':
+                    atts['subsetVariables'] = ','.join(erd_name_map.values())
 
                 for key, val in atts.iteritems():
                     att_element = doc.createElement('att')
