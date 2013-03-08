@@ -301,8 +301,8 @@ class Handler(BaseHandler):
         if not fields:
             fields = [[(name, ())] for name in all_vars]
         
-        #dataset = self.get_grid_dataset(coverage, fields, fill_index, dataset, response)
-        dataset = self.get_seq_dataset(coverage, fields, fill_index, dataset, response)
+        dataset = self.get_grid_dataset(coverage, fields, fill_index, dataset, response)
+        #dataset = self.get_seq_dataset(coverage, fields, fill_index, dataset, response)
         dataset._set_id()
         dataset.close = coverage.close
         return dataset

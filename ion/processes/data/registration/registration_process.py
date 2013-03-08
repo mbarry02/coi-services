@@ -59,7 +59,7 @@ class RegistrationProcess(StandaloneProcess):
 
     def add_dataset_to_xml(self, coverage_path, product_name=''):
         dom1 = parse(self.datasets_xml_path)
-        xml_str = self.get_dataset_xml(coverage_path, product_name, 'sequence')
+        xml_str = self.get_dataset_xml(coverage_path, product_name)
         dom2 = parseString(xml_str)
 
         erddap_datasets_element = dom1.getElementsByTagName('erddapDatasets')[0]
