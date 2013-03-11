@@ -73,6 +73,42 @@ class TransformEventProcess(TransformBase):
     def on_start(self):
         super(TransformEventProcess,self).on_start()
 
+class TransformMultiStreamListener(TransformStreamProcess):
+    '''
+    Transforms which listen to a queue for incoming
+    Ion Streams.
+
+    Parameters:
+      process.queue_name Name of the queue to listen on.
+    '''
+    def __init__(self):
+        TransformStreamProcess.__init__(self)
+        self.subscribers = {}
+
+    def on_start(self):
+        '''
+        Sets up the subscribing endpoint and begins consuming.
+        '''
+        TransformStreamProcess.on_start(self)
+        self.queue_names = self.CFG.get_safe('process.queue_name',self.id)
+        for queue_name in self.queue_names:
+            self.subscribers[queue_name] = StreamSubscriber(process=self, exchange_name=queue_name, callback=self.recv_packet)
+            self.subscribers[queue_name].start()
+
+    def recv_packet(self, msg, stream_route, stream_id):
+        '''
+        To be implemented by the transform developer.
+        This method is called on receipt of an incoming message from a stream.
+        '''
+        raise NotImplementedError('Method recv_packet not implemented')
+
+    def on_quit(self):
+        '''
+        Stops consuming on the queue.
+        '''
+        for queue_name in self.queue_names:
+            self.subscribers[queue_name].stop()
+        TransformStreamProcess.on_quit(self)
 
 class TransformStreamListener(TransformStreamProcess):
     '''
