@@ -6,11 +6,10 @@ from pyon.util.int_test import IonIntegrationTestCase
 from nose.plugins.attrib import attr
 from interface.services.dm.idataset_management_service import DatasetManagementServiceClient
 from interface.services.dm.ipubsub_management_service import PubsubManagementServiceClient
-from pyon.ion.stream import StandaloneStreamPublisher
+from pyon.ion.stream import StandaloneStreamPublisher,StandaloneStreamSubscriber
 from coverage_model import ParameterContext, AxisTypeEnum, QuantityType, ConstantType, NumexprFunction, ParameterFunctionType, VariabilityEnum
 from ion.services.dm.utility.granule_utils import ParameterDictionary
-from ion.services.dm.inventory.dataset_management_service import DatasetManagementService
-from pyon.public import RT, PRED
+import sys
 
 @attr('INT')
 class TestStreamMultiplex(IonIntegrationTestCase):
@@ -21,62 +20,77 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         self.pubsub_management  = PubsubManagementServiceClient()
         self.pdicts = {}
     
-
     def test_recv_packet(self):
-        pdict_id1 = self._get_pdict(['TIME', 'LAT', 'LON', 'TEMPWAT_L0'])
-        pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON', 'CONDWAT_L0'])
+        exchange_pt1 = 'xp1'
+        exchange_pt2 = 'xp2'
+        exchange_pt3 = 'xp3'
+
+        pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
+        pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
+        pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
+        
         stream_def_id1 = self.pubsub_management.create_stream_definition('std_1', parameter_dictionary_id=pdict_id1)
         stream_def_id2 = self.pubsub_management.create_stream_definition('std_2', parameter_dictionary_id=pdict_id2)
+        stream_def_id3 = self.pubsub_management.create_stream_definition('std_3', parameter_dictionary_id=pdict_id3)
         
-        stream_def_id1 = self.read_stream_definition(stream_def_id1)
-        stream_def_id2 = self.read_stream_definition(stream_def_id2)
+        stream_id1, route1 = self.pubsub_management.create_stream('instrument_stream_1', exchange_pt1, stream_definition_id=stream_def_id1)
+        stream_id2, route2 = self.pubsub_management.create_stream('instrument_stream_2', exchange_pt2, stream_definition_id=stream_def_id2)
+        stream_id3, route3 = self.pubsub_management.create_stream('output_stream', exchange_pt3, stream_definition_id=stream_def_id3)
         
-        pdict1_dump = stream_def_id1.parameter_dictionary
-        pdict2_dump = stream_def_id2.parameter_dictionary
+        stream_def_1 = self.pubsub_management.read_stream_definition(stream_def_id1)
+        stream_def_2 = self.pubsub_management.read_stream_definition(stream_def_id2)
+        stream_def_3 = self.pubsub_management.read_stream_definition(stream_def_id3)
 
+        pdict1_dump = stream_def_1.parameter_dictionary
+        pdict2_dump = stream_def_2.parameter_dictionary
+        pdict3_dump = stream_def_3.parameter_dictionary
+         
         pdict1 = ParameterDictionary.load(pdict1_dump)
         pdict2 = ParameterDictionary.load(pdict2_dump)
+        pdict3 = ParameterDictionary.load(pdict3_dump)
 
-        stream1_id, stream1_route = self.pubsub_management.create_stream('stream1', exchange_point='xp1')
-        stream2_id, stream2_route = self.pubsub_management.create_stream('stream2', exchange_point='xp2')
+        publisher1 = StandaloneStreamPublisher(stream_id=stream_id1, stream_route=route1)
+        publisher2 = StandaloneStreamPublisher(stream_id=stream_id2, stream_route=route2)
         
-        publisher1 = StandaloneStreamPublisher(stream_id=stream1_id, stream_route=stream1_route)
-        publisher2 = StandaloneStreamPublisher(stream_id=stream2_id, stream_route=stream2_route)
+        config = {'queue_name':[exchange_pt1,exchange_pt2], 'input_streams':[stream_id1,stream_id2], 'publish_streams':{str(stream_id3):stream_id3}, 'process_type':'stream_process'}
+        pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
+        
+        self.container.proc_manager.procs[pid].subscribers[exchange_pt1].xn.bind(route1.routing_key, publisher1.xp)
+        self.container.proc_manager.procs[pid].subscribers[exchange_pt2].xn.bind(route2.routing_key, publisher2.xp)
+        
+        #validate multiplexed data
+        e = gevent.event.Event()
+        def cb(msg, sr, sid):
+            self.assertEqual(sid, stream_id3)
+            rdt3 = RecordDictionaryTool(pdict3)
+            rdt_out = RecordDictionaryTool.load_from_granule(msg)
+            self.assertEqual(set(rdt3.keys()), set(rdt_out.keys()))
+            e.set()
 
-        pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':{'input_streams':[], 'queue_name':['xp1', 'xp2']}}) 
+        sub = StandaloneStreamSubscriber('stream_subscriber', cb)
+        sub.xn.bind(route3.routing_key, getattr(self.container.proc_manager.procs[pid], stream_id3).xp)
+        self.addCleanup(sub.stop)
+        sub.start()
         
-        self.container.proc_manager.procs[pid].subscribers['xp1'].xn.bind(stream1_route.routing_key, publisher1.xp)
-        self.container.proc_manager.procs[pid].subscribers['xp2'].xn.bind(stream2_route.routing_key, publisher2.xp)
-        
-        #import sys
         dt = 10
         rdt = RecordDictionaryTool(pdict1)
-        #print >> sys.stderr, rdt
-        rdt2 = RecordDictionaryTool(pdict2)
-        #print >> sys.stderr, rdt2
         for i in range(5):
             now = time.time()
             rdt['TIME'] = np.arange(now-dt, now)
             rdt['TEMPWAT_L0'] = np.array([45]*dt)
-            rdt2['TIME'] = np.arange(now, now+dt)
-            rdt2['CONDWAT_L0'] = np.array(np.sin(np.arange(dt) * 2 * np.pi / 60))
+            rdt['CONDWAT_L0'] = np.array(np.sin(np.arange(dt) * 2 * np.pi / 60))
             publisher1.publish(rdt.to_granule())
-            gevent.sleep(1)
+        
+        rdt2 = RecordDictionaryTool(pdict2)
+        dt = 1
+        for i in range(1):
+            now = time.time()
+            rdt2['TIME'] = np.arange(now, now+dt, 30)
+            rdt2['LAT'] = np.arange(now, now+dt)
+            rdt2['LON'] = np.arange(now, now+dt)
             publisher2.publish(rdt2.to_granule())
-            publisher2.publish(rdt2.to_granule())
-        gevent.sleep(1)
+        
         self.container.proc_manager.terminate_process(pid)
-    
-    def read_stream_definition(self, stream_definition_id='', stream_id=''):
-        retval = None
-        if stream_id:
-            sds, assocs = self.container.resource_registry.find_objects(subject=stream_id, predicate=PRED.hasStreamDefinition,id_only=False)
-            retval = sds[0]
-        stream_definition = retval or self.container.resource_registry.read(stream_definition_id)
-        pdicts, _ = self.container.resource_registry.find_objects(subject=stream_definition._id, predicate=PRED.hasParameterDictionary, object_type=RT.ParameterDictionary, id_only=True)
-        if len(pdicts):
-            stream_definition.parameter_dictionary = DatasetManagementService.get_parameter_dictionary(pdicts[0]).dump()
-        return stream_definition
 
     def _get_pdict(self, filter_values):
         t_ctxt = ParameterContext('TIME', param_type=QuantityType(value_encoding=np.dtype('int64')))
@@ -126,6 +140,7 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         contexts = [t_ctxt, lat_ctxt, lon_ctxt, temp_ctxt, cond_ctxt, press_ctxt, tempL1_ctxt]
         context_ids = [ids[i] for i,ctxt in enumerate(contexts) if ctxt.name in filter_values]
         pdict_name = '_'.join([ctxt.name for ctxt in contexts if ctxt.name in filter_values])
+        
         #print >> sys.stderr, filter_values
         #print >> sys.stderr, ids
         #print >> sys.stderr, context_ids
@@ -134,6 +149,6 @@ class TestStreamMultiplex(IonIntegrationTestCase):
             self.pdicts[pdict_name]
             return self.pdicts[pdict_name]
         except KeyError:
-            pdict_id = self.dataset_management.create_parameter_dictionary(pdict_name, parameter_context_ids=context_ids, temporal_context='time')
+            pdict_id = self.dataset_management.create_parameter_dictionary(pdict_name, parameter_context_ids=context_ids, temporal_context='TIME')
             self.pdicts[pdict_name] = pdict_id
             return pdict_id 
