@@ -22,6 +22,7 @@ from interface.services.dm.idataset_management_service import BaseDatasetManagem
 
 from coverage_model.basic_types import AxisTypeEnum
 from coverage_model import SimplexCoverage as ViewCoverage
+from coverage_model.parameter_functions import AbstractFunction
 
 import os
 
@@ -43,7 +44,6 @@ class DatasetManagementService(BaseDatasetManagementService):
 #--------
 
     def create_dataset(self, name='', datastore_name='', view_name='', stream_id='', parameter_dict=None, spatial_domain=None, temporal_domain=None, parameter_dictionary_id='', description=''):
-
         validate_true(parameter_dict or parameter_dictionary_id, 'A parameter dictionary must be supplied to register a new dataset.')
         validate_is_not_none(spatial_domain, 'A spatial domain must be supplied to register a new dataset.')
         validate_is_not_none(temporal_domain, 'A temporal domain must be supplied to register a new dataset.')
@@ -70,6 +70,7 @@ class DatasetManagementService(BaseDatasetManagementService):
         if stream_id:
             self.add_stream(dataset_id,stream_id)
 
+        log.debug('creating dataset: %s', dataset_id)
 
         cov = self._create_coverage(dataset_id, description or dataset_id, parameter_dict, spatial_domain, temporal_domain) 
         self._save_coverage(cov)
@@ -209,6 +210,8 @@ class DatasetManagementService(BaseDatasetManagementService):
             raise NotFound('Unable to locate parameter function with name: %s' % name)
         return res[0]
 
+
+
 #--------
 
     def create_parameter_dictionary(self, name='', parameter_context_ids=None, temporal_context='', description=''):
@@ -249,7 +252,7 @@ class DatasetManagementService(BaseDatasetManagementService):
     def read_parameter_dictionary_by_name(self, name='', id_only=False):
         res, _ = self.clients.resource_registry.find_resources(restype=RT.ParameterDictionary, name=name, id_only=id_only)
         if not len(res):
-            raise NotFound('Unable to locate context with name: %s' % name)
+            raise NotFound('Unable to locate dictionary with name: %s' % name)
         return res[0]
 
 #--------
@@ -325,6 +328,17 @@ class DatasetManagementService(BaseDatasetManagementService):
         pc = ParameterContext.load(pc_res.parameter_context)
         pc._identifier = pc_res._id
         return pc
+
+    @classmethod
+    def get_parameter_function(cls, parameter_function_id=''):
+        '''
+        Preferred client-side class method for constructing a parameter function
+        '''
+        dms_cli = DatasetManagementServiceClient()
+        pf_res = dms_cli.read_parameter_function(parameter_function_id=parameter_function_id)
+        pf = AbstractFunction.load(pf_res.parameter_function)
+        pf._identifier = pf._id
+        return pf
 
     @classmethod
     def get_parameter_context_by_name(cls, name=''):

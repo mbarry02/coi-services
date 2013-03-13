@@ -64,7 +64,7 @@ class RecordDictionaryTool(object):
             self._pdict = param_dictionary
         
         elif stream_definition_id:
-            stream_def_obj = RecordDictionaryTool.pdict_from_stream_def(stream_definition_id)
+            stream_def_obj = RecordDictionaryTool.read_stream_def(stream_definition_id)
             pdict = stream_def_obj.parameter_dictionary
             self._available_fields = stream_def_obj.available_fields or None
             self._pdict = ParameterDictionary.load(pdict)
@@ -82,6 +82,10 @@ class RecordDictionaryTool(object):
 
         self._setup_params()
 
+    def _pval_callback(self, name, slice_):
+        retval = np.atleast_1d(self[name])
+        return retval[slice_]
+
     @classmethod
     def get_paramval(cls, ptype, domain, values):
         paramval = get_value_class(ptype, domain_set=domain)
@@ -93,12 +97,11 @@ class RecordDictionaryTool(object):
         return paramval
 
 
-
     @classmethod
     def load_from_granule(cls, g):
         if isinstance(g.param_dictionary, str):
             instance = cls(stream_definition_id=g.param_dictionary, locator=g.locator)
-            stream_def_obj = RecordDictionaryTool.pdict_from_stream_def(g.param_dictionary)
+            stream_def_obj = RecordDictionaryTool.read_stream_def(g.param_dictionary)
             pdict = stream_def_obj.parameter_dictionary
             instance._available_fields = stream_def_obj.available_fields or None
             instance._pdict = ParameterDictionary.load(pdict)
@@ -129,7 +132,7 @@ class RecordDictionaryTool(object):
         
         for key,val in self._rd.iteritems():
             if val is not None:
-                granule.record_dictionary[self._pdict.ord_from_key(key)] = val[:]
+                granule.record_dictionary[self._pdict.ord_from_key(key)] = self[key]
             else:
                 granule.record_dictionary[self._pdict.ord_from_key(key)] = None
         
@@ -242,6 +245,15 @@ class RecordDictionaryTool(object):
             if isinstance(context.param_type, ParameterFunctionType):
                 return self._rd[name].memoized_values[:]
             return self._rd[name][:]
+        ptype = self._pdict.get_context(name).param_type
+        if isinstance(ptype, ParameterFunctionType):
+            try:
+                pfv = get_value_class(ptype, self.domain)
+                pfv._pval_callback = self._pval_callback
+                retval = pfv[:]
+                return retval
+            except:
+                return None
         else:
             return None
 
@@ -336,7 +348,7 @@ class RecordDictionaryTool(object):
     
     @staticmethod
     @memoize_lru(maxsize=100)
-    def pdict_from_stream_def(stream_def_id):
+    def read_stream_def(stream_def_id):
         pubsub_cli = PubsubManagementServiceClient()
         stream_def_obj = pubsub_cli.read_stream_definition(stream_def_id)
         return stream_def_obj

@@ -87,9 +87,7 @@ class PubsubManagementService(BasePubsubManagementService):
     def compatible_stream_definitions(self, in_stream_definition_id, out_stream_definition_id):
         if in_stream_definition_id == out_stream_definition_id and self.read_stream_definition(in_stream_definition_id):
             return True
-        def1 = self.read_stream_definition(in_stream_definition_id)
-        def2 = self.read_stream_definition(out_stream_definition_id)
-        return self._compare_pdicts(def1.parameter_dictionary, def2.parameter_dictionary)
+        return self.validate_stream_defs(in_stream_definition_id, out_stream_definition_id)
         
     def validate_stream_defs(self, in_stream_definition_id, out_stream_definition_id):
         stream_def_in = self.read_stream_definition(in_stream_definition_id)
@@ -108,15 +106,9 @@ class PubsubManagementService(BasePubsubManagementService):
         incoming_ctxt = [pc for name,(n,pc) in incoming_pdict.iteritems()]
         outgoing_ctxt = [pc for name,(n,pc) in outgoing_pdict.iteritems()]
         
-        incoming_ctxt_names = [name for name,(n,pc) in incoming_pdict.iteritems()]
+        incoming_ctxt_af = [pc for name,(n,pc) in incoming_pdict.iteritems() if name in stream_def_in.available_fields]
         
-        #test definition available for available field
-        for field in stream_def_in.available_fields:
-            if field not in incoming_ctxt_names:
-                log.info("available field %s not defined as a parameter context" % field)
-                return False
-        
-        pfv = ParameterFunctionValidator(incoming_ctxt, outgoing_ctxt)
+        pfv = ParameterFunctionValidator(incoming_ctxt_af, incoming_ctxt, outgoing_ctxt)
         try:
             for name in stream_def_out.available_fields:
                 pfv.validate(name)

@@ -20,7 +20,6 @@ from interface.objects import ProcessDefinition, ProcessSchedule, ProcessRestart
 from interface.services.sa.idata_process_management_service import BaseDataProcessManagementService
 from interface.services.sa.idata_product_management_service import DataProductManagementServiceClient
 
-from ion.services.sa.instrument.data_process_impl import DataProcessImpl
 from pyon.util.arg_check import validate_is_instance
 from ion.util.module_uploader import RegisterModulePreparerPy
 import os
@@ -66,10 +65,6 @@ class DataProcessManagementService(BaseDataProcessManagementService):
         #shortcut names for the import sub-services
         if hasattr(self.clients, "resource_registry"):
             self.RR   = self.clients.resource_registry
-
-        #farm everything out to the impls
-
-        self.data_process = DataProcessImpl(self.clients)
 
 
     #todo: need to know what object will be worked with here
@@ -824,17 +819,16 @@ class DataProcessManagementService(BaseDataProcessManagementService):
         return self._launch_process(queue_name, out_streams, process_definition_id, configuration)
 
 
-
-
-
-
-
     def _validator(self, in_data_product_id, out_data_product_id):
-        in_stream = self._get_stream_from_dp(dp_id=in_data_product_id)
-        in_stream_def = self.clients.resource_registry.find_objects(subject=in_stream._id, predicate=PRED.hasStreamDefinition, id_only=False)
-        out_stream = self._get_stream_from_dp(dp_id=out_data_product_id)
-        out_stream_def = self.clients.resource_registry.find_objects(subject=out_stream._id, predicate=PRED.hasStreamDefinition, id_only=False)
-        return self.clients.pubsub_management.compatible_stream_definitions(in_stream_definition_id=in_stream_def, out_stream_definition_id=out_stream_def)
+        in_stream_id = self._get_stream_from_dp(dp_id=in_data_product_id)
+        in_stream_defs, _ = self.clients.resource_registry.find_objects(subject=in_stream_id, predicate=PRED.hasStreamDefinition, id_only=True)
+        if not len(in_stream_defs):
+            raise BadRequest('No valid stream definition defined for data product stream')
+        out_stream_id = self._get_stream_from_dp(dp_id=out_data_product_id)
+        out_stream_defs, _  = self.clients.resource_registry.find_objects(subject=out_stream_id, predicate=PRED.hasStreamDefinition, id_only=True)
+        if not len(out_stream_defs):
+            raise BadRequest('No valid stream definition defined for data product stream')
+        return self.clients.pubsub_management.compatible_stream_definitions(in_stream_definition_id=in_stream_defs[0], out_stream_definition_id=out_stream_defs[0])
     
     def validate_compatibility(self, in_data_product_ids=None, out_data_product_ids=None, routes=None):
         '''

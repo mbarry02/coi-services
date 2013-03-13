@@ -60,6 +60,16 @@ class DatasetManagementIntTest(IonIntegrationTestCase):
 
     def test_pfunc_crud(self):
         contexts, funcs = self.create_pfuncs()
+        context_ids = [context_id for ctxt,context_id in contexts.itervalues()]
+
+        pdict_id = self.dataset_management.create_parameter_dictionary(name='functional_pdict', parameter_context_ids=context_ids, temporal_context='time')
+        self.addCleanup(self.dataset_management.delete_parameter_dictionary, pdict_id)
+
+        expr, expr_id = funcs['CONDWAT_L1']
+        func_class = DatasetManagementService.get_parameter_function(expr_id)
+        self.assertIsInstance(func_class, NumexprFunction)
+
+
 
 
     def test_pdict_crud(self):

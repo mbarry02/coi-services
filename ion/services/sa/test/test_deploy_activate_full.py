@@ -87,6 +87,7 @@ class TestIMSDeployAsPrimaryDevice(IonIntegrationTestCase):
         def killAllDataProcesses():
             for proc_id in self.rrclient.find_resources(RT.DataProcess, None, None, True)[0]:
                 self.dataprocessclient.deactivate_data_process(proc_id)
+                self.dataprocessclient.delete_data_process(proc_id)
         self.addCleanup(killAllDataProcesses)
 
 
@@ -276,8 +277,6 @@ class TestIMSDeployAsPrimaryDevice(IonIntegrationTestCase):
 
         instAgentInstance_obj = IonObject(RT.InstrumentAgentInstance, name='SBE37IMAgentInstanceYear1',
             description="SBE37IMAgentInstanceYear1",
-            comms_device_address='sbe37-simulator.oceanobservatories.org',
-            comms_device_port=4001,
             port_agent_config = port_agent_config,
             stream_configurations = [raw_config, parsed_config])
 
@@ -372,8 +371,6 @@ class TestIMSDeployAsPrimaryDevice(IonIntegrationTestCase):
 
         instAgentInstance_obj = IonObject(RT.InstrumentAgentInstance, name='SBE37IMAgentInstanceYear2',
             description="SBE37IMAgentInstanceYear2",
-            comms_device_address='sbe37-simulator.oceanobservatories.org',
-            comms_device_port=4004,
             port_agent_config = port_agent_config)
 
 

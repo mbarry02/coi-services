@@ -12,7 +12,7 @@ import sys
 if sys.platform == 'darwin':
     os.environ['C_INCLUDE_PATH'] = '/usr/local/include'
 
-version = '2.0.14-dev'
+version = '2.0.16-dev'
 
 setup(  name = 'coi-services',
         version = version,
@@ -31,6 +31,7 @@ setup(  name = 'coi-services',
         install_requires = [
             'pyzmq==2.2.0',
             'coverage-model',
+            'ion-functions',
             'pyon',
             'Flask==0.9',
             'python-dateutil==1.5',
