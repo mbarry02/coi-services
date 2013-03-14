@@ -95,53 +95,53 @@ class StreamMultiplex(TransformMultiStreamListener):
         if diff:
             raise OutputStreamDefError("output stream definition parameters are different than the combined input stream definition parameters %s" % diff)
         
-        #set result
+        #add delta error contexts dynamically
         stream_def = self._read_stream_def(stream_out_id)
         pdict_dump = stream_def.parameter_dictionary
         pdict = ParameterDictionary.load(pdict_dump)
         for stream_id,granule in self.granules.iteritems():
-            stream_def = self._read_stream_def(stream_id)
-            pdict_dump = stream_def.parameter_dictionary
-            pdict_input = ParameterDictionary.load(pdict_dump)
-            pnames = [name for name,v in pdict_input.iteritems() if name != pdict_input.temporal_parameter_name]
-            pnames = pnames + ['delta_time'] 
-            delta_key = '_'.join(pnames)
+            delta_key = '_'.join([stream_id,'delta_time'])
             pdict.add_context(ParameterContext(delta_key, param_type=QuantityType(value_encoding='l'), fill_value=-9999))
         
         result = RecordDictionaryTool(param_dictionary=pdict)
         if pdict.temporal_parameter_name is None:
             log.warning('%s output stream definition parameter dictionary does not define a temporal parameter', stream_out_id)
+
         #need to set temporal domain to set shape
         if pdict.temporal_parameter_name:
             #set one averaged time domain
             result[pdict.temporal_parameter_name] = self._get_temporal_values()
-        print >> sys.stderr, "result rdt shape", result._shp, "dirty shape", result._dirty_shape  
+        
         #put values from all input streams onto output stream
         for stream_id,granule in self.granules.iteritems():
             stream_def = self._read_stream_def(stream_id)
             pdict_dump = stream_def.parameter_dictionary
-            pdict = ParameterDictionary.load(pdict_dump)
+            pdict_s = ParameterDictionary.load(pdict_dump)
             rdt = RecordDictionaryTool.load_from_granule(granule)
             for field in rdt.fields:
-                if field != pdict.temporal_parameter_name:
-                    print >> sys.stderr, field
-                    result[field] = rdt[field]
+                if field != pdict_s.temporal_parameter_name:
+                    fill_value = pdict_s.get_context(field).fill_value
+                    out = np.atleast_1d(result[pdict.temporal_parameter_name])
+                    inp = np.atleast_1d(rdt[field])
+                    data = inp
+                    data = np.resize(data, out.shape)
+                    for i in range(len(inp), len(out)):
+                        data[i] = fill_value
+                    result[field] = data
 
         if pdict.temporal_parameter_name:
             #add delta times to output granule
             for stream_id,granule in self.granules.iteritems():
                 tkey = self._get_temporal_key(stream_id) 
                 if tkey:
-                    stream_def = self._read_stream_def(stream_id)
-                    pdict_dump = stream_def.parameter_dictionary
-                    pdict = ParameterDictionary.load(pdict_dump)
                     rdt = RecordDictionaryTool.load_from_granule(granule)
-                    pnames = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name]
-                    pnames = pnames + ['delta_time'] 
-                    delta_key = '_'.join(pnames)
-                    delta = [a-b for a,b in zip(rdt[tkey], result[pdict.temporal_parameter_name])]
-                    for x in range(len(rdt[tkey]), len(result[pdict.temporal_parameter_name])):
-                        delta.append(-9999)
+                    delta_key = '_'.join([stream_id,'delta_time'])
+                    fill_value = pdict.get_context(delta_key).fill_value
+                    inp = np.atleast_1d(rdt[tkey])
+                    out = np.atleast_1d(result[pdict.temporal_parameter_name])
+                    delta = [a-b for a,b in zip(inp, out)]
+                    for x in range(len(inp), len(out)):
+                        delta.append(fill_value)
                     result[delta_key]= np.array(delta)  
         return result
 

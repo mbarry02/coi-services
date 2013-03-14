@@ -19,7 +19,11 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         self.dataset_management  = DatasetManagementServiceClient()
         self.pubsub_management  = PubsubManagementServiceClient()
         self.pdicts = {}
-    
+   
+    def _create_streams(self, num_streams):
+        pass
+
+
     def test_recv_packet(self):
         exchange_pt1 = 'xp1'
         exchange_pt2 = 'xp2'
@@ -101,13 +105,13 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         t_ctxt.fill_value = -9999
         t_ctxt_id = self.dataset_management.create_parameter_context(name='TIME', parameter_context=t_ctxt.dump(), parameter_type='quantity<int64>', unit_of_measure=t_ctxt.uom)
 
-        lat_ctxt = ParameterContext('LAT', param_type=ConstantType(QuantityType(value_encoding=np.dtype('float32'))))
+        lat_ctxt = ParameterContext('LAT', param_type=QuantityType(value_encoding=np.dtype('float32')))
         lat_ctxt.axis = AxisTypeEnum.LAT
         lat_ctxt.uom = 'degree_north'
         lat_ctxt.fill_value = -9999
         lat_ctxt_id = self.dataset_management.create_parameter_context(name='LAT', parameter_context=lat_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=lat_ctxt.uom)
 
-        lon_ctxt = ParameterContext('LON', param_type=ConstantType(QuantityType(value_encoding=np.dtype('float32'))))
+        lon_ctxt = ParameterContext('LON', param_type=QuantityType(value_encoding=np.dtype('float32')))
         lon_ctxt.axis = AxisTypeEnum.LON
         lon_ctxt.uom = 'degree_east'
         lon_ctxt.fill_value = -9999
