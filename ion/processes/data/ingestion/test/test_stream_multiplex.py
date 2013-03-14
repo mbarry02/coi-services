@@ -20,52 +20,48 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         self.pubsub_management  = PubsubManagementServiceClient()
         self.pdicts = {}
    
-    def _create_streams(self, num_streams):
-        pass
+    def _create_stream(self, i, pdict_id):
+        exchange_pt = 'xp%s'%i
+        stream_def_id = self.pubsub_management.create_stream_definition('std_%s'%i, parameter_dictionary_id=pdict_id)
+        stream_id, route = self.pubsub_management.create_stream('stream_%s'%i, exchange_pt, stream_definition_id=stream_def_id)
+        stream_def = self.pubsub_management.read_stream_definition(stream_def_id)
+        publisher = StandaloneStreamPublisher(stream_id=stream_id, stream_route=route)
+        pdict_dump = stream_def.parameter_dictionary
+        pdict = ParameterDictionary.load(pdict_dump)
+        record = {'exchange_pt':exchange_pt, 'stream_def_id':stream_def_id, 'stream_id':stream_id, 'route':route, 'stream_def':stream_def, 'publisher':publisher, 'pdict':pdict}
+        return record
 
+    def _launch_multiplex_process(self, input_pdict_ids, output_pdict_id):
+        input_streams = {}
+        for i,pdict_id in enumerate(input_pdict_ids):
+            record = self._create_stream(i+1, pdict_id)
+            input_streams[pdict_id] = record
+
+        exchange_pts = [row['exchange_pt'] for pdict_id,row in input_streams.iteritems()]
+        input_stream_ids = [row['stream_id'] for pdict_id,row in input_streams.iteritems()]
+        output_stream = self._create_stream(0, output_pdict_id)
+        output_stream_id = output_stream['stream_id']
+
+        config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'publish_streams':{str(output_stream_id):output_stream_id}, 'process_type':'stream_process'}
+        pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
+        
+        for pdict_id,row in input_streams.iteritems():
+            self.container.proc_manager.procs[pid].subscribers[row['exchange_pt']].xn.bind(row['route'].routing_key, row['publisher'].xp)
+        
+        return (pid, input_streams, output_stream)
 
     def test_recv_packet(self):
-        exchange_pt1 = 'xp1'
-        exchange_pt2 = 'xp2'
-        exchange_pt3 = 'xp3'
 
         pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
         
-        stream_def_id1 = self.pubsub_management.create_stream_definition('std_1', parameter_dictionary_id=pdict_id1)
-        stream_def_id2 = self.pubsub_management.create_stream_definition('std_2', parameter_dictionary_id=pdict_id2)
-        stream_def_id3 = self.pubsub_management.create_stream_definition('std_3', parameter_dictionary_id=pdict_id3)
-        
-        stream_id1, route1 = self.pubsub_management.create_stream('instrument_stream_1', exchange_pt1, stream_definition_id=stream_def_id1)
-        stream_id2, route2 = self.pubsub_management.create_stream('instrument_stream_2', exchange_pt2, stream_definition_id=stream_def_id2)
-        stream_id3, route3 = self.pubsub_management.create_stream('output_stream', exchange_pt3, stream_definition_id=stream_def_id3)
-        
-        stream_def_1 = self.pubsub_management.read_stream_definition(stream_def_id1)
-        stream_def_2 = self.pubsub_management.read_stream_definition(stream_def_id2)
-        #stream_def_3 = self.pubsub_management.read_stream_definition(stream_def_id3)
+        pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3)
 
-        pdict1_dump = stream_def_1.parameter_dictionary
-        pdict2_dump = stream_def_2.parameter_dictionary
-        #pdict3_dump = stream_def_3.parameter_dictionary
-         
-        pdict1 = ParameterDictionary.load(pdict1_dump)
-        pdict2 = ParameterDictionary.load(pdict2_dump)
-        #pdict3 = ParameterDictionary.load(pdict3_dump)
-
-        publisher1 = StandaloneStreamPublisher(stream_id=stream_id1, stream_route=route1)
-        publisher2 = StandaloneStreamPublisher(stream_id=stream_id2, stream_route=route2)
-        
-        config = {'queue_name':[exchange_pt1,exchange_pt2], 'input_streams':[stream_id1,stream_id2], 'publish_streams':{str(stream_id3):stream_id3}, 'process_type':'stream_process'}
-        pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
-        
-        self.container.proc_manager.procs[pid].subscribers[exchange_pt1].xn.bind(route1.routing_key, publisher1.xp)
-        self.container.proc_manager.procs[pid].subscribers[exchange_pt2].xn.bind(route2.routing_key, publisher2.xp)
-        
         #validate multiplexed data
         e = gevent.event.Event()
         def cb(msg, sr, sid):
-            self.assertEqual(sid, stream_id3)
+            self.assertEqual(sid, output_stream['stream_id'])
             rdt_out = RecordDictionaryTool.load_from_granule(msg)
             #print >> sys.stderr, rdt3
             #print >> sys.stderr, rdt_out
@@ -74,28 +70,26 @@ class TestStreamMultiplex(IonIntegrationTestCase):
             e.set()
 
         sub = StandaloneStreamSubscriber('stream_subscriber', cb)
-        sub.xn.bind(route3.routing_key, getattr(self.container.proc_manager.procs[pid], stream_id3).xp)
+        sub.xn.bind(output_stream['route'].routing_key, getattr(self.container.proc_manager.procs[pid], output_stream['stream_id']).xp)
         self.addCleanup(sub.stop)
         sub.start()
         
-        dt = 1
-        rdt2 = RecordDictionaryTool(pdict2)
-        for i in range(1):
-            now = time.time()
-            rdt2['TIME'] = np.arange(now, now+dt)
-            rdt2['LAT'] = np.array([32])
-            rdt2['LON'] = np.array([41])
-            publisher2.publish(rdt2.to_granule())
-        
         dt = 10
-        rdt = RecordDictionaryTool(pdict1)
-        for i in range(5):
+        rdt2 = RecordDictionaryTool(input_streams[pdict_id2]['pdict'])
+        rdt = RecordDictionaryTool(input_streams[pdict_id1]['pdict'])
+        for i in range(10):
             now = time.time()
+            
+            if i % 2 == 0:
+                rdt2['TIME'] = np.arange(now, now+1)
+                rdt2['LAT'] = np.array([32])
+                rdt2['LON'] = np.array([41])
+                input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
+            
             rdt['TIME'] = np.arange(now-dt, now)
             rdt['TEMPWAT_L0'] = np.array([45]*dt)
             rdt['CONDWAT_L0'] = np.array(np.sin(np.arange(dt) * 2 * np.pi / 60))
-            publisher1.publish(rdt.to_granule())
-        
+            input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
         self.container.proc_manager.terminate_process(pid)
 
