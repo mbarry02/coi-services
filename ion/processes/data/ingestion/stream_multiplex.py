@@ -36,7 +36,7 @@ class StreamMultiplex(TransformMultiStreamListener):
     def _find_temporal_avg_interval(self):
         result = []
         for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(self, stream_id)
+            tkey = self._get_temporal_key(stream_id)
             if tkey:
                 rdt = RecordDictionaryTool.load_from_granule(granule)
                 #interval between values [x1 - x0, x2 - x1, x3 - x2]
@@ -48,7 +48,7 @@ class StreamMultiplex(TransformMultiStreamListener):
     def _find_temporal_avg_start(self):
         start_values = []
         for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(self, stream_id)
+            tkey = self._get_temporal_key(stream_id)
             if tkey:
                 rdt = RecordDictionaryTool.load_from_granule(granule)
                 start_values.append(rdt[tkey][0])
@@ -57,7 +57,7 @@ class StreamMultiplex(TransformMultiStreamListener):
     def _find_temporal_max_length(self):
         result = 0
         for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(self, stream_id)
+            tkey = self._get_temporal_key(stream_id)
             if tkey:
                 rdt = RecordDictionaryTool.load_from_granule(granule)
                 length  = len(rdt[tkey]) 
@@ -70,7 +70,7 @@ class StreamMultiplex(TransformMultiStreamListener):
         interval = self._find_temporal_avg_interval()
         length = self._find_temporal_max_length()
         if length > 0 and interval > 0:
-            end = start + sum(range(0, length, interval))
+            end = start + sum([interval] * length)
             return np.arange(start, end, interval)
         return np.array([])
     
@@ -82,12 +82,10 @@ class StreamMultiplex(TransformMultiStreamListener):
             pdict = ParameterDictionary.load(pdict_dump)
             pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name] 
             input_pdict_lst = input_pdict_lst + pdict_lst
-        print >> sys.stderr, input_pdict_lst 
         stream_def = self._read_stream_def(stream_out_id)
         pdict_dump = stream_def.parameter_dictionary
         pdict = ParameterDictionary.load(pdict_dump)
         output_pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name] 
-        print >> sys.stderr, output_pdict_lst 
         
         return set(input_pdict_lst) - set(output_pdict_lst)
 
@@ -108,41 +106,47 @@ class StreamMultiplex(TransformMultiStreamListener):
             pnames = [name for name,v in pdict_input.iteritems() if name != pdict_input.temporal_parameter_name]
             pnames = pnames + ['delta_time'] 
             delta_key = '_'.join(pnames)
-            print >> sys.stderr, "deta_key", delta_key
             pdict.add_context(ParameterContext(delta_key, param_type=QuantityType(value_encoding='l'), fill_value=-9999))
         
-        result = RecordDictionaryTool(pdict)
-        
+        result = RecordDictionaryTool(param_dictionary=pdict)
+        if pdict.temporal_parameter_name is None:
+            log.warning('%s output stream definition parameter dictionary does not define a temporal parameter', stream_out_id)
+        #need to set temporal domain to set shape
+        if pdict.temporal_parameter_name:
+            #set one averaged time domain
+            result[pdict.temporal_parameter_name] = self._get_temporal_values()
+        print >> sys.stderr, "result rdt shape", result._shp, "dirty shape", result._dirty_shape  
         #put values from all input streams onto output stream
         for stream_id,granule in self.granules.iteritems():
             stream_def = self._read_stream_def(stream_id)
             pdict_dump = stream_def.parameter_dictionary
             pdict = ParameterDictionary.load(pdict_dump)
             rdt = RecordDictionaryTool.load_from_granule(granule)
-            #for name,(n,pc) in pdict.iteritems() if name != pdict.temporal_parameter_name:
-        
+            for field in rdt.fields:
+                if field != pdict.temporal_parameter_name:
+                    print >> sys.stderr, field
+                    result[field] = rdt[field]
 
-        if pdict.temporal_parameter_name is None:
-            log.warning('%s output stream definition parameter dictionary does not define a temporal parameter', stream_out_id)
-        
         if pdict.temporal_parameter_name:
-            #set one averaged time domain
-            result[pdict.temporal_parameter_name] = self._get_temporal_values()
-            
             #add delta times to output granule
             for stream_id,granule in self.granules.iteritems():
                 tkey = self._get_temporal_key(stream_id) 
                 if tkey:
+                    stream_def = self._read_stream_def(stream_id)
+                    pdict_dump = stream_def.parameter_dictionary
+                    pdict = ParameterDictionary.load(pdict_dump)
                     rdt = RecordDictionaryTool.load_from_granule(granule)
-                    delta_key = '_'.join([stream_id,tkey])    
-                    delta = [abs(b-a) for a,b in zip(rdt[tkey], result[pdict.temporal_parameter_name])]
+                    pnames = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name]
+                    pnames = pnames + ['delta_time'] 
+                    delta_key = '_'.join(pnames)
+                    delta = [a-b for a,b in zip(rdt[tkey], result[pdict.temporal_parameter_name])]
+                    for x in range(len(rdt[tkey]), len(result[pdict.temporal_parameter_name])):
+                        delta.append(-9999)
                     result[delta_key]= np.array(delta)  
-
         return result
 
     @handle_stream_exception()
     def recv_packet(self, msg, stream_route, stream_id):
-        print >> sys.stderr, "recv_packet"
         if msg == {}:
             log.error('Received empty message from stream: %s', stream_id)
             return
@@ -160,12 +164,10 @@ class StreamMultiplex(TransformMultiStreamListener):
         self.granules[stream_id] = msg
         
         output_streams = self.CFG.get_safe('process.publish_streams', {})
-        print >> sys.stderr, "output_streams", output_streams
         for stream_out_id,stream_out_id in output_streams.iteritems():
             self.publish(msg, stream_out_id)
     
     def publish(self, msg, stream_out_id):
-        print >> sys.stderr, "publish"
         publisher = getattr(self, stream_out_id)
         
         input_streams = self.CFG.get_safe('process.input_streams', [])
