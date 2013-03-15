@@ -5,24 +5,23 @@ from coverage_model import ParameterDictionary,ParameterContext
 from pyon.util.memoize import memoize_lru
 from interface.objects import Granule
 from pyon.public import log
-from pyon.event.event import handle_stream_exception
 from coverage_model.parameter_types import QuantityType
 import numpy as np
-import sys
+#import sys
+#import time
+import math
 
 class StreamMultiplex(TransformMultiStreamListener):
     
     def __init__(self):
-        print >> sys.stderr, "init"
         TransformMultiStreamListener.__init__(self)
         self.granules = {}
         self.received = []
-    
+
     def on_start(self):
-        print >> sys.stderr, "on_start"
         TransformMultiStreamListener.on_start(self)
         self.pubsub_management = PubsubManagementServiceProcessClient(process=self)
-    
+        
     @memoize_lru(maxsize=100)
     def _read_stream_def(self, stream_id):
         return self.pubsub_management.read_stream_definition(stream_id=stream_id)
@@ -42,8 +41,8 @@ class StreamMultiplex(TransformMultiStreamListener):
                 #interval between values [x1 - x0, x2 - x1, x3 - x2]
                 intervals = [abs(rdt[tkey][i+1] - rdt[tkey][i]) for i,t in enumerate(rdt[tkey]) if i+1 < len(rdt[tkey])]
                 result = result + intervals 
-        avg = int(sum([interval/float(len(result)) for interval in result]))
-        return avg
+        avg = sum([interval/float(len(result)) for interval in result])
+        return int(math.ceil(avg))
 
     def _find_temporal_avg_start(self):
         start_values = []
@@ -69,11 +68,11 @@ class StreamMultiplex(TransformMultiStreamListener):
         start = self._find_temporal_avg_start()
         interval = self._find_temporal_avg_interval()
         length = self._find_temporal_max_length()
-        if length > 0 and interval > 0:
-            end = start + sum([interval] * length)
-            return np.arange(start, end, interval)
-        return np.array([])
-    
+        end = start + sum([interval] * length)
+        if interval == 0:
+            return np.atleast_1d(start)
+        return np.arange(start, end, interval)
+
     def _get_stream_input_output_diff(self, stream_out_id):
         input_pdict_lst = []
         for stream_id,granule in self.granules.iteritems():
@@ -90,7 +89,6 @@ class StreamMultiplex(TransformMultiStreamListener):
         return set(input_pdict_lst) - set(output_pdict_lst)
 
     def _create_rdt(self, stream_out_id):
-        print >> sys.stderr, "_create_rdt"
         diff = self._get_stream_input_output_diff(stream_out_id)
         if diff:
             raise OutputStreamDefError("output stream definition parameters are different than the combined input stream definition parameters %s" % diff)
@@ -111,7 +109,6 @@ class StreamMultiplex(TransformMultiStreamListener):
         if pdict.temporal_parameter_name:
             #set one averaged time domain
             result[pdict.temporal_parameter_name] = self._get_temporal_values()
-        
         #put values from all input streams onto output stream
         for stream_id,granule in self.granules.iteritems():
             stream_def = self._read_stream_def(stream_id)
@@ -145,7 +142,6 @@ class StreamMultiplex(TransformMultiStreamListener):
                     result[delta_key]= np.array(delta)  
         return result
 
-    @handle_stream_exception()
     def recv_packet(self, msg, stream_route, stream_id):
         if msg == {}:
             log.error('Received empty message from stream: %s', stream_id)
@@ -157,16 +153,9 @@ class StreamMultiplex(TransformMultiStreamListener):
         if stream_id not in self.received:
             self.received.append(stream_id)
         
-        #TODO:
-        #keep track of frequencies for each stream_id
-        #if frequency plus error offset is missed....then raise exception or send incomplete granule
-        
         self.granules[stream_id] = msg
-        
-        output_streams = self.CFG.get_safe('process.publish_streams', {})
-        for stream_out_id,stream_out_id in output_streams.iteritems():
-            self.publish(msg, stream_out_id)
-    
+        self.queue.put((self.publish, msg))
+
     def publish(self, msg, stream_out_id):
         publisher = getattr(self, stream_out_id)
         
@@ -175,9 +164,12 @@ class StreamMultiplex(TransformMultiStreamListener):
             return
         
         if set(self.received) == set(input_streams):
+            #start = time.time()
             rdt = self._create_rdt(stream_out_id)
             publisher.publish(rdt.to_granule())
             self.received = []
+            self.granules= {}
+            #print >> sys.stderr, "profile", time.time() - start
 
 class OutputStreamDefError(Exception):
     pass 

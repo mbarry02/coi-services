@@ -16,6 +16,7 @@ import gevent
 import re
 from pyon.util.log import log
 from copy import copy
+
 dot = logging.getLogger('dot')
 
 class TransformBase(SimpleProcess):
@@ -94,6 +95,20 @@ class TransformMultiStreamListener(TransformStreamProcess):
         for queue_name in self.queue_names:
             self.subscribers[queue_name] = StreamSubscriber(process=self, exchange_name=queue_name, callback=self.recv_packet)
             self.subscribers[queue_name].start()
+            timeout = self.CFG.get_safe('process.timeout', None)
+        self.queue = gevent.queue.Queue()
+        self.multiplex = gevent.spawn(self._process_queue, timeout)
+
+    def _process_queue(self, timeout):
+        while True:
+            try:
+                publish_func,msg = self.queue.get(timeout=timeout)
+                output_streams = self.CFG.get_safe('process.publish_streams', {})
+                for stream_out_id,stream_out_id in output_streams.iteritems():
+                    publish_func(msg, stream_out_id)
+            except Exception, e:
+                log.exception(e)
+                return
 
     def recv_packet(self, msg, stream_route, stream_id):
         '''
@@ -101,7 +116,13 @@ class TransformMultiStreamListener(TransformStreamProcess):
         This method is called on receipt of an incoming message from a stream.
         '''
         raise NotImplementedError('Method recv_packet not implemented')
-
+    
+    def publish(self, msg, stream_out_id):
+        '''
+        To be implemented by the transform developer.
+        '''
+        raise NotImplementedError('Method publish not implemented')
+    
     def on_quit(self):
         '''
         Stops consuming on the queue.
@@ -109,6 +130,7 @@ class TransformMultiStreamListener(TransformStreamProcess):
         for queue_name in self.queue_names:
             self.subscribers[queue_name].stop()
         TransformStreamProcess.on_quit(self)
+        gevent.kill(self.multiplex)
 
 class TransformStreamListener(TransformStreamProcess):
     '''
@@ -137,6 +159,7 @@ class TransformStreamListener(TransformStreamProcess):
         This method is called on receipt of an incoming message from a stream.
         '''
         raise NotImplementedError('Method recv_packet not implemented')
+    
 
     def on_quit(self):
         '''

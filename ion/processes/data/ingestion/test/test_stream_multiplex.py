@@ -7,9 +7,9 @@ from nose.plugins.attrib import attr
 from interface.services.dm.idataset_management_service import DatasetManagementServiceClient
 from interface.services.dm.ipubsub_management_service import PubsubManagementServiceClient
 from pyon.ion.stream import StandaloneStreamPublisher,StandaloneStreamSubscriber
-from coverage_model import ParameterContext, AxisTypeEnum, QuantityType, ConstantType, NumexprFunction, ParameterFunctionType, VariabilityEnum
+from coverage_model import ParameterContext, AxisTypeEnum, QuantityType
 from ion.services.dm.utility.granule_utils import ParameterDictionary
-import sys
+import uuid
 
 @attr('INT')
 class TestStreamMultiplex(IonIntegrationTestCase):
@@ -18,8 +18,8 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         self.container.start_rel_from_url('res/deploy/r2deploy.yml')
         self.dataset_management  = DatasetManagementServiceClient()
         self.pubsub_management  = PubsubManagementServiceClient()
-        self.pdicts = {}
-   
+        self.max_context = 100 
+    
     def _create_stream(self, i, pdict_id):
         exchange_pt = 'xp%s'%i
         stream_def_id = self.pubsub_management.create_stream_definition('std_%s'%i, parameter_dictionary_id=pdict_id)
@@ -49,24 +49,47 @@ class TestStreamMultiplex(IonIntegrationTestCase):
             self.container.proc_manager.procs[pid].subscribers[row['exchange_pt']].xn.bind(row['route'].routing_key, row['publisher'].xp)
         
         return (pid, input_streams, output_stream)
+    
+    def _make_rdt(self, pdict, size=1, time_offset=0):
+        rdt = RecordDictionaryTool(pdict)
+        for name,(n,pc) in pdict.iteritems():
+            if pdict.temporal_parameter_name == name:
+                now = time.time()
+                rdt[name] = np.arange(now-time_offset, now-time_offset+size)
+            else:
+                rdt[name] = np.array(np.sin(np.arange(size) * 2 * np.pi / 60))
+        return rdt 
+    
+    def _get_original_ts(self, pdict_id, input_streams, rdt):
+        delta = rdt[ '_'.join([input_streams[pdict_id]['stream_id'],'delta_time']) ]
+        return np.array([a+b for a,b in zip(delta,rdt['TIME'])])
 
-    def test_recv_packet(self):
-
+    def _test_two_input_streams(self, data_size):
         pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
         
         pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3)
-
+        
+        rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], data_size, 5000)
+        rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], data_size)
         #validate multiplexed data
         e = gevent.event.Event()
         def cb(msg, sr, sid):
             self.assertEqual(sid, output_stream['stream_id'])
             rdt_out = RecordDictionaryTool.load_from_granule(msg)
-            #print >> sys.stderr, rdt3
-            #print >> sys.stderr, rdt_out
-            for field in rdt_out.fields:
-                print >> sys.stderr,field,rdt_out[field] 
+            self.assertTrue(np.array_equal(rdt_out['CONDWAT_L0'], rdt['CONDWAT_L0']))
+            self.assertTrue(np.array_equal(rdt_out['TEMPWAT_L0'], rdt['TEMPWAT_L0']))
+            self.assertTrue(np.array_equal(rdt_out['LAT'], rdt2['LAT']))
+            self.assertTrue(np.array_equal(rdt_out['LON'], rdt2['LON']))
+            
+            #reconstruct original timestamps and test
+            original_ts = self._get_original_ts(pdict_id1, input_streams, rdt_out)
+            self.assertTrue(np.array_equal(original_ts, rdt['TIME']))
+            
+            original_ts = self._get_original_ts(pdict_id2, input_streams, rdt_out)
+            self.assertTrue(np.array_equal(original_ts, rdt2['TIME']))
+            
             e.set()
 
         sub = StandaloneStreamSubscriber('stream_subscriber', cb)
@@ -74,24 +97,22 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         self.addCleanup(sub.stop)
         sub.start()
         
-        dt = 10
-        rdt2 = RecordDictionaryTool(input_streams[pdict_id2]['pdict'])
-        rdt = RecordDictionaryTool(input_streams[pdict_id1]['pdict'])
         for i in range(10):
-            now = time.time()
-            
             if i % 2 == 0:
-                rdt2['TIME'] = np.arange(now, now+1)
-                rdt2['LAT'] = np.array([32])
-                rdt2['LON'] = np.array([41])
                 input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
-            
-            rdt['TIME'] = np.arange(now-dt, now)
-            rdt['TEMPWAT_L0'] = np.array([45]*dt)
-            rdt['CONDWAT_L0'] = np.array(np.sin(np.arange(dt) * 2 * np.pi / 60))
             input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
-        self.container.proc_manager.terminate_process(pid)
+        self.assertTrue(e.wait(4))
+        self.addCleanup(self.container.proc_manager.terminate_process, pid);
+        
+    def test_two_input_streams_size1(self):
+        self._test_two_input_streams(1)
+    
+    def test_two_input_streams_size10(self):
+        self._test_two_input_streams(10)
+    
+    def test_two_input_streams_size10000(self):
+        self._test_two_input_streams(10000)
 
     def _get_pdict(self, filter_values):
         t_ctxt = ParameterContext('TIME', param_type=QuantityType(value_encoding=np.dtype('int64')))
@@ -111,45 +132,43 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         lon_ctxt.fill_value = -9999
         lon_ctxt_id = self.dataset_management.create_parameter_context(name='LON', parameter_context=lon_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=lon_ctxt.uom)
 
-
         temp_ctxt = ParameterContext('TEMPWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         temp_ctxt.uom = 'deg_C'
         temp_ctxt.fill_value = -9999
         temp_ctxt_id = self.dataset_management.create_parameter_context(name='TEMPWAT_L0', parameter_context=temp_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=temp_ctxt.uom)
 
-        # Conductivity - values expected to be the decimal results of conversion from hex
         cond_ctxt = ParameterContext('CONDWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         cond_ctxt.uom = 'S m-1'
         cond_ctxt.fill_value = -9999
         cond_ctxt_id = self.dataset_management.create_parameter_context(name='CONDWAT_L0', parameter_context=cond_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=cond_ctxt.uom)
 
-        # Pressure - values expected to be the decimal results of conversion from hex
         press_ctxt = ParameterContext('PRESWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         press_ctxt.uom = 'dbar'
         press_ctxt.fill_value = -9999
         press_ctxt_id = self.dataset_management.create_parameter_context(name='PRESWAT_L0', parameter_context=press_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=press_ctxt.uom)
+        
+        #ctxt_ids = []
+        #ctxts = []
+        #for i in range(self.max_context):
+        #    ctxt = ParameterContext('MEAS_%s'%i, param_type=QuantityType(value_encoding=np.dtype('float32')))
+        #    ctxt.uom = 'some uom'
+        #    ctxt.fill_value = -9999
+        #    ctxt_id = self.dataset_management.create_parameter_context(name='MEAS_%s'%i, parameter_context=ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=ctxt.uom)
+        #    ctxt_ids.append(ctxt_id)
 
         # TEMPWAT_L1 = (TEMPWAT_L0 / 10000) - 10
-        tl1_func = '(TEMPWAT_L0 / 10000) - 10'
-        tl1_pmap = {'TEMPWAT_L0':'TEMPWAT_L0'}
-        func = NumexprFunction('TEMPWAT_L1', tl1_func, tl1_pmap)
-        tempL1_ctxt = ParameterContext('TEMPWAT_L1', param_type=ParameterFunctionType(function=func), variability=VariabilityEnum.TEMPORAL)
-        tempL1_ctxt.uom = 'deg_C'
-        tempL1_ctxt_id = self.dataset_management.create_parameter_context(name=tempL1_ctxt.name, parameter_context=tempL1_ctxt.dump(), parameter_type='pfunc', unit_of_measure=tempL1_ctxt.uom)
+        #tl1_func = '(TEMPWAT_L0 / 10000) - 10'
+        #tl1_pmap = {'TEMPWAT_L0':'TEMPWAT_L0'}
+        #func = NumexprFunction('TEMPWAT_L1', tl1_func, tl1_pmap)
+        #tempL1_ctxt = ParameterContext('TEMPWAT_L1', param_type=ParameterFunctionType(function=func), variability=VariabilityEnum.TEMPORAL)
+        #tempL1_ctxt.uom = 'deg_C'
+        #tempL1_ctxt_id = self.dataset_management.create_parameter_context(name=tempL1_ctxt.name, parameter_context=tempL1_ctxt.dump(), parameter_type='pfunc', unit_of_measure=tempL1_ctxt.uom)
         #import sys
-        ids = [t_ctxt_id, lat_ctxt_id, lon_ctxt_id, temp_ctxt_id, cond_ctxt_id, press_ctxt_id, tempL1_ctxt_id]
-        contexts = [t_ctxt, lat_ctxt, lon_ctxt, temp_ctxt, cond_ctxt, press_ctxt, tempL1_ctxt]
-        context_ids = [ids[i] for i,ctxt in enumerate(contexts) if ctxt.name in filter_values]
-        pdict_name = '_'.join([ctxt.name for ctxt in contexts if ctxt.name in filter_values])
         
-        #print >> sys.stderr, filter_values
-        #print >> sys.stderr, ids
-        #print >> sys.stderr, context_ids
-        #print >> sys.stderr, pdict_name
-        try:
-            self.pdicts[pdict_name]
-            return self.pdicts[pdict_name]
-        except KeyError:
-            pdict_id = self.dataset_management.create_parameter_dictionary(pdict_name, parameter_context_ids=context_ids, temporal_context='TIME')
-            self.pdicts[pdict_name] = pdict_id
-            return pdict_id 
+        ids = [t_ctxt_id, lat_ctxt_id, lon_ctxt_id, temp_ctxt_id, cond_ctxt_id, press_ctxt_id]
+        #ids = ctxt_ids + ids
+        contexts = [t_ctxt, lat_ctxt, lon_ctxt, temp_ctxt, cond_ctxt, press_ctxt]
+        #contexts = contexts + ctxts
+        context_ids = [ids[i] for i,ctxt in enumerate(contexts) if ctxt.name in filter_values]
+        pdict_name = str(uuid.uuid4()) 
+        return self.dataset_management.create_parameter_dictionary(pdict_name, parameter_context_ids=context_ids, temporal_context='TIME')
