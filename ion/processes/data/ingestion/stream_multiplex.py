@@ -6,8 +6,9 @@ from pyon.util.memoize import memoize_lru
 from interface.objects import Granule
 from pyon.public import log
 from coverage_model.parameter_types import QuantityType
+from coverage_model.utils import find_nearest_index
 import numpy as np
-#import sys
+import sys
 #import time
 import math
 
@@ -15,7 +16,7 @@ class StreamMultiplex(TransformMultiStreamListener):
     
     def __init__(self):
         TransformMultiStreamListener.__init__(self)
-        self.granules = {}
+        self.storage = {}
         self.received = []
 
     def on_start(self):
@@ -26,150 +27,66 @@ class StreamMultiplex(TransformMultiStreamListener):
     def _read_stream_def(self, stream_id):
         return self.pubsub_management.read_stream_definition(stream_id=stream_id)
     
-    def _get_temporal_key(self, stream_id):
-        stream_def = self._read_stream_def(stream_id)
-        pdict_dump = stream_def.parameter_dictionary
-        pdict = ParameterDictionary.load(pdict_dump)
-        return pdict.temporal_parameter_name
-    
-    def _find_temporal_avg_interval(self):
-        result = []
-        for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(stream_id)
-            if tkey:
-                rdt = RecordDictionaryTool.load_from_granule(granule)
-                #interval between values [x1 - x0, x2 - x1, x3 - x2]
-                intervals = [abs(rdt[tkey][i+1] - rdt[tkey][i]) for i,t in enumerate(rdt[tkey]) if i+1 < len(rdt[tkey])]
-                result = result + intervals 
-        avg = sum([interval/float(len(result)) for interval in result])
-        return int(math.ceil(avg))
+    def find_nearest_index_value(self, seq, val):
+        a = np.asanyarray(seq)
+        idx = find_nearest_index(a, val)
+        fv = a.flat[idx]
+        if val < fv:
+            return (idx,a.flat[idx-1])
+        else:
+            return (idx,fv)
 
-    def _find_temporal_avg_start(self):
-        start_values = []
-        for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(stream_id)
-            if tkey:
-                rdt = RecordDictionaryTool.load_from_granule(granule)
-                start_values.append(rdt[tkey][0])
-        return int(sum([v/float(len(start_values)) for v in start_values]))
-    
-    def _find_temporal_max_length(self):
-        result = 0
-        for stream_id,granule in self.granules.iteritems():
-            tkey = self._get_temporal_key(stream_id)
-            if tkey:
-                rdt = RecordDictionaryTool.load_from_granule(granule)
-                length  = len(rdt[tkey]) 
-                if length >= result:
-                    result = length
-        return result
-
-    def _get_temporal_values(self):
-        start = self._find_temporal_avg_start()
-        interval = self._find_temporal_avg_interval()
-        length = self._find_temporal_max_length()
-        end = start + sum([interval] * length)
-        if interval == 0:
-            return np.atleast_1d(start)
-        return np.arange(start, end, interval)
-
-    def _get_stream_input_output_diff(self, stream_out_id):
-        input_pdict_lst = []
-        for stream_id,granule in self.granules.iteritems():
-            stream_def = self._read_stream_def(stream_id)
-            pdict_dump = stream_def.parameter_dictionary
-            pdict = ParameterDictionary.load(pdict_dump)
-            pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name] 
-            input_pdict_lst = input_pdict_lst + pdict_lst
-        stream_def = self._read_stream_def(stream_out_id)
-        pdict_dump = stream_def.parameter_dictionary
-        pdict = ParameterDictionary.load(pdict_dump)
-        output_pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name] 
-        
-        return set(input_pdict_lst) - set(output_pdict_lst)
-
-    def _create_rdt(self, stream_out_id):
-        diff = self._get_stream_input_output_diff(stream_out_id)
-        if diff:
-            raise OutputStreamDefError("output stream definition parameters are different than the combined input stream definition parameters %s" % diff)
-        
-        #add delta error contexts dynamically
-        stream_def = self._read_stream_def(stream_out_id)
-        pdict_dump = stream_def.parameter_dictionary
-        pdict = ParameterDictionary.load(pdict_dump)
-        for stream_id,granule in self.granules.iteritems():
-            delta_key = '_'.join([stream_id,'delta_time'])
-            pdict.add_context(ParameterContext(delta_key, param_type=QuantityType(value_encoding='l'), fill_value=-9999))
-        
-        result = RecordDictionaryTool(param_dictionary=pdict)
-        if pdict.temporal_parameter_name is None:
-            log.warning('%s output stream definition parameter dictionary does not define a temporal parameter', stream_out_id)
-
-        #need to set temporal domain to set shape
-        if pdict.temporal_parameter_name:
-            #set one averaged time domain
-            result[pdict.temporal_parameter_name] = self._get_temporal_values()
-        #put values from all input streams onto output stream
-        for stream_id,granule in self.granules.iteritems():
-            stream_def = self._read_stream_def(stream_id)
-            pdict_dump = stream_def.parameter_dictionary
-            pdict_s = ParameterDictionary.load(pdict_dump)
-            rdt = RecordDictionaryTool.load_from_granule(granule)
-            for field in rdt.fields:
-                if field != pdict_s.temporal_parameter_name:
-                    fill_value = pdict_s.get_context(field).fill_value
-                    out = np.atleast_1d(result[pdict.temporal_parameter_name])
-                    inp = np.atleast_1d(rdt[field])
-                    data = inp
-                    data = np.resize(data, out.shape)
-                    for i in range(len(inp), len(out)):
-                        data[i] = fill_value
-                    result[field] = data
-
-        if pdict.temporal_parameter_name:
-            #add delta times to output granule
-            for stream_id,granule in self.granules.iteritems():
-                tkey = self._get_temporal_key(stream_id) 
-                if tkey:
-                    rdt = RecordDictionaryTool.load_from_granule(granule)
-                    delta_key = '_'.join([stream_id,'delta_time'])
-                    fill_value = pdict.get_context(delta_key).fill_value
-                    inp = np.atleast_1d(rdt[tkey])
-                    out = np.atleast_1d(result[pdict.temporal_parameter_name])
-                    delta = [a-b for a,b in zip(inp, out)]
-                    for x in range(len(inp), len(out)):
-                        delta.append(fill_value)
-                    result[delta_key]= np.array(delta)  
-        return result
 
     def recv_packet(self, msg, stream_route, stream_id):
         if msg == {}:
             log.error('Received empty message from stream: %s', stream_id)
             return
+        
         if not isinstance(msg, Granule):
             log.error('Received a message that is not a granule. %s' % msg)
             return
         
-        if stream_id not in self.received:
-            self.received.append(stream_id)
+        master_stream = self.CFG.get_safe('process.master_stream', "")
+        rdt = RecordDictionaryTool.load_from_granule(msg)
         
-        self.granules[stream_id] = msg
-        self.queue.put((self.publish, msg))
+        if master_stream != stream_id:
+            try:
+                self.storage[stream_id].append(rdt)
+            except KeyError:
+                self.storage[stream_id] = []
+                self.storage[stream_id].append(rdt)
+        
+        if master_stream == stream_id:
+            output_streams = self.CFG.get_safe('process.publish_streams', {})
+            for stream_out_id,stream_out_id in output_streams.iteritems(): 
+                stream_def = self._read_stream_def(stream_out_id)
+                pdict_dump = stream_def.parameter_dictionary
+                pdict = ParameterDictionary.load(pdict_dump)
+                result = RecordDictionaryTool(pdict)
+                print >> sys.stderr, "result", result 
+                print >> sys.stderr, pdict.temporal_parameter_name
+                #print >> sys.stderr, rdt[pdict.temporal_parameter_name]
+                
+                closest_values = []
+                for stream_id,rdts in self.storage.iteritems():
+                    for srdt in rdts:
+                        stream_def = self._read_stream_def(stream_id)
+                        pdict_dump = stream_def.parameter_dictionary
+                        pdict_s = ParameterDictionary.load(pdict_dump)
+                        for time_val in rdt[pdict.temporal_parameter_name]:
+                            print >> sys.stderr, "time_val", time_val
+                            print >> sys.stderr, "find_nearest_index_value", time_val, srdt[pdict_s.temporal_parameter_name]
+                            (idx,val) = self.find_nearest_index_value(time_val, srdt[pdict_s.temporal_parameter_name])   
+                            closest_values.append((idx,val))
 
+                print >> sys.stderr, "closest_values", closest_values 
+             
+
+    
     def publish(self, msg, stream_out_id):
         publisher = getattr(self, stream_out_id)
-        
-        input_streams = self.CFG.get_safe('process.input_streams', [])
-        if not self.received or not input_streams:
-            return
-        
-        if set(self.received) == set(input_streams):
-            #start = time.time()
-            rdt = self._create_rdt(stream_out_id)
-            publisher.publish(rdt.to_granule())
-            self.received = []
-            self.granules= {}
-            #print >> sys.stderr, "profile", time.time() - start
+        rdt_out = self._align_and_create_rdt(stream_out_id)
+        publisher.publish(rdt_out.to_granule())
 
 class OutputStreamDefError(Exception):
     pass 
