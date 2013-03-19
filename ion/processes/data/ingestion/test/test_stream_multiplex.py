@@ -10,6 +10,7 @@ from pyon.ion.stream import StandaloneStreamPublisher,StandaloneStreamSubscriber
 from coverage_model import ParameterContext, AxisTypeEnum, QuantityType
 from ion.services.dm.utility.granule_utils import ParameterDictionary
 import uuid
+import sys
 
 @attr('INT')
 class TestStreamMultiplex(IonIntegrationTestCase):
@@ -31,18 +32,22 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         record = {'exchange_pt':exchange_pt, 'stream_def_id':stream_def_id, 'stream_id':stream_id, 'route':route, 'stream_def':stream_def, 'publisher':publisher, 'pdict':pdict}
         return record
 
-    def _launch_multiplex_process(self, input_pdict_ids, output_pdict_id):
+    def _launch_multiplex_process(self, input_pdict_ids, output_pdict_id, master_pdict_id):
         input_streams = {}
+        master_stream_id = ''
         for i,pdict_id in enumerate(input_pdict_ids):
             record = self._create_stream(i+1, pdict_id)
             input_streams[pdict_id] = record
+            print >> sys.stderr, pdict_id,"==",master_pdict_id
+            if pdict_id == master_pdict_id:
+                master_stream_id = input_streams[pdict_id]['stream_id']
 
         exchange_pts = [row['exchange_pt'] for pdict_id,row in input_streams.iteritems()]
         input_stream_ids = [row['stream_id'] for pdict_id,row in input_streams.iteritems()]
         output_stream = self._create_stream(0, output_pdict_id)
         output_stream_id = output_stream['stream_id']
-
-        config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':input_stream_ids[0], 'publish_streams':{str(output_stream_id):output_stream_id}, 'process_type':'stream_process'}
+        print >> sys.stderr, "master_stream_id", master_stream_id
+        config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':master_stream_id, 'publish_streams':{str(output_stream_id):output_stream_id}, 'process_type':'stream_process'}
         pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
         
         for pdict_id,row in input_streams.iteritems():
@@ -64,8 +69,7 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
         
-        pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3)
-        
+        pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3, pdict_id1)
 
         #validate multiplexed data
         e = gevent.event.Event()
@@ -87,18 +91,20 @@ class TestStreamMultiplex(IonIntegrationTestCase):
             if i % 2 == 0:
                 now = time.time()
                 rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], now, data_size)
+                #print >> sys.stderr, "rdt2 time", rdt2['TIME']
                 input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
-                gevent.sleep(.5)
+                gevent.sleep(1.5)
             now = time.time()
             rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], now, data_size, 5000)
+            #print >> sys.stderr, "rdt time", rdt['TIME']
             input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
-            gevent.sleep(1)
+            gevent.sleep(3)
         
         self.assertTrue(e.wait(4))
         self.addCleanup(self.container.proc_manager.terminate_process, pid);
-        
+
     def test_two_input_streams_size1(self):
-        self._test_two_input_streams(1)
+        self._test_two_input_streams(10)
     
     #def test_two_input_streams_size10(self):
     #    self._test_two_input_streams(10)
