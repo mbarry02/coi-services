@@ -11,8 +11,8 @@ from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTo
 from ion.core.function.transform_function import SimpleGranuleTransformFunction
 from interface.services.dm.ipubsub_management_service import PubsubManagementServiceProcessClient
 
-from seawater.gibbs import SP_from_cndr
-from seawater.gibbs import cte
+
+import pygsw.vectors as gsw
 
 # For usage: please refer to the integration tests in
 # ion/processes/data/transforms/ctd/test/test_ctd_transforms.py
@@ -47,7 +47,7 @@ class CTDBP_SalinityTransform(TransformDataProcess):
 
         log.debug("CTDBP L2 salinity transform received granule with record dict: %s", packet.record_dictionary)
 
-        granule = CTDBP_SalinityTransformAlgorithm.execute(packet, params=self.stream_definition._id)
+        granule = CTDBP_SalinityTransformAlgorithm.execute(packet, params={'stream_def':self.stream_definition._id})
 
         log.debug("CTDBP L2 salinity transform publishing granule with record dict: %s", granule.record_dictionary)
 
@@ -78,15 +78,14 @@ class CTDBP_SalinityTransformAlgorithm(SimpleGranuleTransformFunction):
         """
 
         rdt = RecordDictionaryTool.load_from_granule(input)
-        out_rdt = RecordDictionaryTool(stream_definition_id=params)
+        out_rdt = RecordDictionaryTool(stream_definition_id=params['stream_def'])
 
         out_rdt['time'] = rdt['time']
 
         conductivity = rdt['conductivity']
         pressure = rdt['pressure']
         temperature = rdt['temp']
-
-        sal_value = SP_from_cndr(conductivity * 10, t=temperature, p=pressure)
+        sal_value = gsw.sp_from_c(conductivity * 10, temperature, pressure)
 
         log.debug("CTDBP Salinity algorithm calculated the sp (practical salinity) values: %s", sal_value)
 

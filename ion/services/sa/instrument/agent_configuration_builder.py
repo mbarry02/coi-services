@@ -54,6 +54,11 @@ class AgentConfigurationBuilder(object):
         """
         raise NotImplementedError("Extender of class must implement this")
 
+    def _augment_dict(self, title, basedict, newitems):
+        for k, v in newitems.iteritems():
+            if k in basedict:
+                log.warn("Overwriting %s[%s] of '%s' with '%s'", title, k, basedict[k], v)
+            basedict[k] = v
 
     def _check_associations(self):
         assert self.agent_instance_obj
@@ -122,8 +127,22 @@ class AgentConfigurationBuilder(object):
         return type(self._get_device()).__name__
 
     def _generate_driver_config(self):
-        # should override this
-        return {}
+        # get default config
+        driver_config = self.agent_instance_obj.driver_config
+
+        agent_obj = self._get_agent()
+
+        # Create driver config.
+        add_driver_config = {
+            'workdir'      : tempfile.gettempdir(),
+            'dvr_mod'      : agent_obj.driver_module,
+            'dvr_cls'      : agent_obj.driver_class
+        }
+
+        self._augment_dict("Agent driver_config", driver_config, add_driver_config)
+
+        return driver_config
+
 
     def _generate_stream_config(self):
         dsm = self.clients.dataset_management
@@ -383,18 +402,18 @@ class InstrumentAgentConfigurationBuilder(AgentConfigurationBuilder):
         return self.agent_instance_obj.startup_config
 
     def _generate_driver_config(self):
+        # get default config
+        driver_config = super(InstrumentAgentConfigurationBuilder, self)._generate_driver_config()
 
         instrument_agent_instance_obj = self.agent_instance_obj
-        agent_obj = self._get_agent()
 
         # Create driver config.
-        driver_config = {
-            'workdir'      : tempfile.gettempdir(),
+        add_driver_config = {
             'comms_config' : instrument_agent_instance_obj.driver_config.get('comms_config'),
             'pagent_pid'   : instrument_agent_instance_obj.driver_config.get('pagent_pid'),
-            'dvr_mod'      : agent_obj.driver_module,
-            'dvr_cls'      : agent_obj.driver_class
         }
+
+        self._augment_dict("Instrument Agent driver_config", driver_config, add_driver_config)
 
         return driver_config
 

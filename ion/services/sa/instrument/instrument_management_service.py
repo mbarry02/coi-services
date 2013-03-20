@@ -261,7 +261,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
         """
 
-        instrument_agent_instance_id = self.RR2.create(instrument_agent_instance)
+        instrument_agent_instance_id = self.RR2.create(instrument_agent_instance, RT.InstrumentAgentInstance)
 
         if instrument_agent_id:
             self.assign_instrument_agent_to_instrument_agent_instance(instrument_agent_id, instrument_agent_instance_id)
@@ -282,7 +282,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(instrument_agent_instance)
+        return self.RR2.update(instrument_agent_instance, RT.InstrumentAgentInstance)
 
     def read_instrument_agent_instance(self, instrument_agent_instance_id=''):
         """
@@ -290,7 +290,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @param instrument_agent_instance_id the id of the object to be fetched
         @retval InstrumentAgentInstance resource
         """
-        return self.RR2.read(instrument_agent_instance_id)
+        return self.RR2.read(instrument_agent_instance_id, RT.InstrumentAgentInstance)
 
     def delete_instrument_agent_instance(self, instrument_agent_instance_id=''):
         """
@@ -299,14 +299,13 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete_subject_associations(PRED.hasAgentInstance, instrument_agent_instance_id)
 
-        self.RR2.delete(instrument_agent_instance_id)
+        self.RR2.retire(instrument_agent_instance_id, RT.InstrumentAgentInstance)
 
 
     def force_delete_instrument_agent_instance(self, instrument_agent_instance_id=''):
 
-        self.RR2.force_delete(instrument_agent_instance_id)
+        self.RR2.pluck_delete(instrument_agent_instance_id, RT.InstrumentAgentInstance)
 
 
 
@@ -341,7 +340,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         Launch the instument agent instance and return the id
         """
 
-        instrument_agent_instance_obj = self.RR2.read(instrument_agent_instance_id)
+        instrument_agent_instance_obj = self.read_instrument_agent_instance(instrument_agent_instance_id)
 
         # launch the port agent before verifying anything.
         # if agent instance doesn't validate, port agent won't care and will be available for when it does validate
@@ -370,11 +369,69 @@ class InstrumentManagementService(BaseInstrumentManagementService):
 
         self.record_instrument_producer_activation(config_builder._get_device()._id, instrument_agent_instance_id)
 
-        launcher.await_launch(20)
+
+        launcher.await_launch(self._agent_launch_timeout("start_instrument_agent_instance"))
 
         return process_id
 
 
+    def _agent_launch_timeout(self, fn_name):
+        # some hopefully intelligent buffers on timeout.
+        #
+        # we expect to have at least 20 seconds to launch the agent.
+        # the agent needs around 6 seconds to launch, currently.  pad that out to 16 seconds.
+        #
+        # use a 1-second buffer to guarantee that we time out the launch and not the function call
+        # let the buffer be longer (up to 5 seconds) if we have time.
+        # if the buffer is calculated to be short, warn.
+        remaining_time_s = self._remaining_reply_time_s(fn_name)
+
+        minbuffer  = 1
+        maxbuffer  = 5
+        launchtime = 16
+
+        buffer = max(minbuffer, min(maxbuffer, remaining_time_s - launchtime))
+        log.debug("Agent launch buffer time is %s", buffer)
+
+        if buffer == minbuffer:
+            log_fn = log.warn
+        else:
+            log_fn = log.info
+
+        log_fn("Allowing (%s - %s) seconds for agent launch in %s", remaining_time_s, buffer, fn_name)
+
+        return remaining_time_s - buffer
+
+
+    def _remaining_reply_time_s(self, fn_name):
+        ret = int(self._remaining_reply_time_ms(fn_name) / 1000)
+        return ret
+
+    def _remaining_reply_time_ms(self, fn_name):
+        """
+        look into the request headers to find out how many milliseconds are left before the call will time out
+
+        @param fn_name the name of the RPC function that will be
+        """
+
+        ctx = self.get_context()
+        # make sure the op matches our function name
+        if "op" not in ctx or fn_name != ctx["op"]:
+            raise BadRequest("Could not find reply-by for %s in get_context: %s" % (fn_name, ctx))
+
+        # look for the reply-by field
+        if "reply-by" not in ctx:
+            raise BadRequest("Could not find reply-by field in context %s" % ctx)
+
+        # convert to int and only allow it if it's nonzero
+        reply_by_val = int(ctx["reply-by"])
+        if 0 == reply_by_val:
+            raise BadRequest("Got a zero value when parsing 'reply-by' field of '%s'" % ctx["reply_by"])
+
+        # get latest time
+        now = int(get_ion_ts())
+
+        return reply_by_val - now
 
 
     def _start_port_agent(self, instrument_agent_instance_obj=None):
@@ -511,7 +568,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        instrument_agent_id = self.RR2.create(instrument_agent)
+        instrument_agent_id = self.RR2.create(instrument_agent, RT.InstrumentAgent)
 
         # Create the process definition to launch the agent
         process_definition = ProcessDefinition()
@@ -533,7 +590,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(instrument_agent)
+        return self.RR2.update(instrument_agent, RT.InstrumentAgent)
 
     def read_instrument_agent(self, instrument_agent_id=''):
         """
@@ -541,7 +598,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @param instrument_agent_id the id of the object to be fetched
         @retval InstrumentAgent resource
         """
-        return self.RR2.read(instrument_agent_id)
+        return self.RR2.read(instrument_agent_id, RT.InstrumentAgent)
 
     def delete_instrument_agent(self, instrument_agent_id=''):
         """
@@ -551,16 +608,19 @@ class InstrumentManagementService(BaseInstrumentManagementService):
 
         """
         #retrieve the associated process definition
+
+        self.RR2.retire(instrument_agent_id, RT.InstrumentAgent)
+
+
+    def force_delete_instrument_agent(self, instrument_agent_id=''):
+
         process_def_objs = self.RR2.find_process_definitions_of_instrument_agent(instrument_agent_id)
 
         for pd_obj in process_def_objs:
             self.RR2.unassign_process_definition_from_instrument_agent(pd_obj._id, instrument_agent_id)
             self.clients.process_dispatcher.delete_process_definition(pd_obj._id)
 
-        self.RR2.delete(instrument_agent_id)
-
-    def force_delete_instrument_agent(self, instrument_agent_id=''):
-        self.RR2.force_delete(instrument_agent_id)
+        self.RR2.pluck_delete(instrument_agent_id, RT.InstrumentAgent)
 
 
     def register_instrument_agent(self, instrument_agent_id='', agent_egg='', qa_documents=''):
@@ -579,7 +639,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         """
 
         # retrieve the resource
-        self.RR2.read(instrument_agent_id)
+        self.read_instrument_agent(instrument_agent_id)
 
         qa_doc_parser = QADocParser()
 
@@ -637,7 +697,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.create(instrument_model)
+        return self.RR2.create(instrument_model, RT.InstrumentModel)
 
     def update_instrument_model(self, instrument_model=None):
         """
@@ -647,7 +707,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(instrument_model)
+        return self.RR2.update(instrument_model, RT.InstrumentModel)
 
     def read_instrument_model(self, instrument_model_id=''):
         """
@@ -655,7 +715,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @param instrument_model_id the id of the object to be fetched
         @retval InstrumentModel resource
         """
-        return self.RR2.read(instrument_model_id)
+        return self.RR2.read(instrument_model_id, RT.InstrumentModel)
 
     def delete_instrument_model(self, instrument_model_id=''):
         """
@@ -664,10 +724,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(instrument_model_id)
+        self.RR2.retire(instrument_model_id, RT.InstrumentModel)
 
     def force_delete_instrument_model(self, instrument_model_id=''):
-        self.RR2.force_delete(instrument_model_id)
+        self.RR2.pluck_delete(instrument_model_id, RT.InstrumentModel)
 
 
 
@@ -686,7 +746,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        instrument_device_id = self.RR2.create(instrument_device)
+        instrument_device_id = self.RR2.create(instrument_device, RT.InstrumentDevice)
 
         #register the instrument as a data producer
         self.DAMS.register_instrument(instrument_device_id)
@@ -701,7 +761,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(instrument_device)
+        return self.RR2.update(instrument_device, RT.InstrumentDevice)
 
     def read_instrument_device(self, instrument_device_id=''):
         """
@@ -710,7 +770,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval InstrumentDevice resource
 
         """
-        return self.RR2.read(instrument_device_id)
+        return self.RR2.read(instrument_device_id, RT.InstrumentDevice)
 
     def delete_instrument_device(self, instrument_device_id=''):
         """
@@ -719,11 +779,11 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(instrument_device_id)
+        self.RR2.retire(instrument_device_id, RT.InstrumentDevice)
 
 
     def force_delete_instrument_device(self, instrument_device_id=''):
-        self.RR2.force_delete(instrument_device_id)
+        self.RR2.pluck_delete(instrument_device_id, RT.InstrumentDevice)
 
     ##
     ##
@@ -773,7 +833,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
 
             #Check across Orgs which have shared this device for role which as proper level to allow lifecycle transition
             for org in orgs:
-                if has_org_role(gov_values.actor_roles, org.name, [OBSERVATORY_OPERATOR_ROLE,ORG_MANAGER_ROLE]):
+                if has_org_role(gov_values.actor_roles, org.org_governance_name, [OBSERVATORY_OPERATOR_ROLE,ORG_MANAGER_ROLE]):
                     return True, ''
 
         else:
@@ -788,7 +848,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
 
             #Check across Orgs which have shared this device for role which as proper level to allow lifecycle transition
             for org in orgs:
-                if has_org_role(gov_values.actor_roles, org.name, [INSTRUMENT_OPERATOR_ROLE, OBSERVATORY_OPERATOR_ROLE,ORG_MANAGER_ROLE] ) and is_shared:
+                if has_org_role(gov_values.actor_roles, org.org_governance_name, [INSTRUMENT_OPERATOR_ROLE, OBSERVATORY_OPERATOR_ROLE,ORG_MANAGER_ROLE] ) and is_shared:
                     return True, ''
 
         return False, '%s(%s) has been denied since the user %s has not acquired the resource or is not the proper role for this transition: %s' % (self.name, gov_values.op, gov_values.actor_id, lifecycle_event)
@@ -847,7 +907,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        platform_agent_instance_id = self.RR2.create(platform_agent_instance)
+        platform_agent_instance_id = self.RR2.create(platform_agent_instance, RT.PlatformAgentInstance)
 
         if platform_agent_id:
             self.assign_platform_agent_to_platform_agent_instance(platform_agent_id, platform_agent_instance_id)
@@ -864,7 +924,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(platform_agent_instance)
+        return self.RR2.update(platform_agent_instance, RT.PlatformAgentInstance)
 
     def read_platform_agent_instance(self, platform_agent_instance_id=''):
         """
@@ -872,7 +932,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @param platform_agent_instance_id the id of the object to be fetched
         @retval PlatformAgentInstance resource
         """
-        return self.RR2.read(platform_agent_instance_id)
+        return self.RR2.read(platform_agent_instance_id, RT.PlatformAgentInstance)
 
     def delete_platform_agent_instance(self, platform_agent_instance_id=''):
         """
@@ -881,10 +941,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(platform_agent_instance_id)
+        self.RR2.retire(platform_agent_instance_id, RT.PlatformAgentInstance)
 
     def force_delete_platform_agent_instance(self, platform_agent_instance_id=''):
-        self.RR2.force_delete(platform_agent_instance_id)
+        self.RR2.pluck_delete(platform_agent_instance_id, RT.PlatformAgentInstance)
 
 #    def _get_child_platforms(self, platform_device_id):
 #        """ recursively trace hasDevice relationships, return list of all PlatformDevice objects
@@ -906,7 +966,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         configuration_builder = PlatformAgentConfigurationBuilder(self.clients)
         launcher = AgentLauncher(self.clients.process_dispatcher)
 
-        platform_agent_instance_obj = self.RR2.read(platform_agent_instance_id)
+        platform_agent_instance_obj = self.read_platform_agent_instance(platform_agent_instance_id)
 
         configuration_builder.set_agent_instance_object(platform_agent_instance_obj)
         config = configuration_builder.prepare()
@@ -924,7 +984,8 @@ class InstrumentManagementService(BaseInstrumentManagementService):
 
         process_id = launcher.launch(config, configuration_builder._get_process_definition()._id)
         configuration_builder.record_launch_parameters(config, process_id)
-        launcher.await_launch(20)
+
+        launcher.await_launch(self._agent_launch_timeout("start_platform_agent_instance"))
 
         return process_id
 
@@ -955,7 +1016,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
         """
 
-        platform_agent_id = self.RR2.create(platform_agent)
+        platform_agent_id = self.RR2.create(platform_agent, RT.PlatformAgent)
 
         # Create the process definition to launch the agent
         process_definition = ProcessDefinition()
@@ -977,7 +1038,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
 
         """
-        return self.RR2.update(platform_agent)
+        return self.RR2.update(platform_agent, RT.PlatformAgent)
 
     def read_platform_agent(self, platform_agent_id=''):
         """
@@ -986,7 +1047,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval PlatformAgent resource
 
         """
-        return self.RR2.read(platform_agent_id)
+        return self.RR2.read(platform_agent_id, RT.PlatformAgent)
 
     def delete_platform_agent(self, platform_agent_id=''):
         """
@@ -995,10 +1056,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(platform_agent_id)
+        self.RR2.retire(platform_agent_id, RT.PlatformAgent)
 
     def force_delete_platform_agent(self, platform_agent_id=''):
-        self.RR2.force_delete(platform_agent_id)
+        self.RR2.pluck_delete(platform_agent_id, RT.PlatformAgent)
 
 
     ##########################################################################
@@ -1016,7 +1077,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.create(platform_model)
+        return self.RR2.create(platform_model, RT.PlatformModel)
 
     def update_platform_model(self, platform_model=None):
         """
@@ -1026,7 +1087,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is not set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.update(platform_model)
+        return self.RR2.update(platform_model, RT.PlatformModel)
 
     def read_platform_model(self, platform_model_id=''):
         """
@@ -1035,7 +1096,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval PlatformModel resource
 
         """
-        return self.RR2.read(platform_model_id)
+        return self.RR2.read(platform_model_id, RT.PlatformModel)
 
     def delete_platform_model(self, platform_model_id=''):
         """
@@ -1044,10 +1105,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(platform_model_id)
+        self.RR2.retire(platform_model_id, RT.PlatformModel)
 
     def force_delete_platform_model(self, platform_model_id=''):
-        self.RR2.force_delete(platform_model_id)
+        self.RR2.pluck_delete(platform_model_id, RT.PlatformModel)
 
 
     ##########################################################################
@@ -1067,7 +1128,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
         """
 
-        platform_device_id = self.RR2.create(platform_device)
+        platform_device_id = self.RR2.create(platform_device, RT.PlatformDevice)
         #register the platform as a data producer
         self.DAMS.register_instrument(platform_device_id)
 
@@ -1083,7 +1144,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
 
         """
-        return self.RR2.update(platform_device)
+        return self.RR2.update(platform_device, RT.PlatformDevice)
 
     def read_platform_device(self, platform_device_id=''):
         """
@@ -1092,7 +1153,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval PlatformDevice resource
 
         """
-        return self.RR2.read(platform_device_id)
+        return self.RR2.read(platform_device_id, RT.PlatformDevice)
 
     def delete_platform_device(self, platform_device_id=''):
         """
@@ -1101,10 +1162,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(platform_device_id)
+        self.RR2.retire(platform_device_id, RT.PlatformDevice)
 
     def force_delete_platform_device(self, platform_device_id=''):
-        self.RR2.force_delete(platform_device_id)
+        self.RR2.pluck_delete(platform_device_id, RT.PlatformDevice)
 
 
 
@@ -1124,7 +1185,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.create(sensor_model)
+        return self.RR2.create(sensor_model, RT.SensorModel)
 
     def update_sensor_model(self, sensor_model=None):
         """
@@ -1135,7 +1196,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
 
         """
-        return self.RR2.update(sensor_model)
+        return self.RR2.update(sensor_model, RT.SensorModel)
 
     def read_sensor_model(self, sensor_model_id=''):
         """
@@ -1144,7 +1205,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval SensorModel resource
 
         """
-        return self.RR2.read(sensor_model_id)
+        return self.RR2.read(sensor_model_id, RT.SensorModel)
 
     def delete_sensor_model(self, sensor_model_id=''):
         """
@@ -1153,10 +1214,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(sensor_model_id)
+        self.RR2.retire(sensor_model_id, RT.SensorModel)
 
     def force_delete_sensor_model(self, sensor_model_id=''):
-        self.RR2.force_delete(sensor_model_id)
+        self.RR2.pluck_delete(sensor_model_id, RT.SensorModel)
 
 
     ##########################################################################
@@ -1174,7 +1235,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadRequest if the incoming _id field is set
         @throws BadReqeust if the incoming name already exists
         """
-        return self.RR2.create(sensor_device)
+        return self.RR2.create(sensor_device, RT.SensorDevice)
 
     def update_sensor_device(self, sensor_device=None):
         """
@@ -1185,7 +1246,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @throws BadReqeust if the incoming name already exists
 
         """
-        return self.RR2.update(sensor_device)
+        return self.RR2.update(sensor_device, RT.SensorDevice)
 
     def read_sensor_device(self, sensor_device_id=''):
         """
@@ -1194,7 +1255,7 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval SensorDevice resource
 
         """
-        return self.RR2.read(sensor_device_id)
+        return self.RR2.read(sensor_device_id, RT.SensorDevice)
 
     def delete_sensor_device(self, sensor_device_id=''):
         """
@@ -1203,10 +1264,10 @@ class InstrumentManagementService(BaseInstrumentManagementService):
         @retval success whether it succeeded
 
         """
-        self.RR2.delete(sensor_device_id)
+        self.RR2.retire(sensor_device_id, RT.SensorDevice)
 
     def force_delete_sensor_device(self, sensor_device_id=''):
-        self.RR2.force_delete(sensor_device_id)
+        self.RR2.pluck_delete(sensor_device_id, RT.SensorDevice)
 
 
 
@@ -1556,10 +1617,11 @@ class InstrumentManagementService(BaseInstrumentManagementService):
             user_id=user_id)
 
         # clean up InstAgent list as it sometimes includes the device
-        ia = []
+        ia = None
         for agent in extended_instrument.instrument_agent:
             if agent.type_ == 'InstrumentAgent':
-                ia.append(agent)
+                ia = agent
+                break
         extended_instrument.instrument_agent = ia
 
         # Status computation
@@ -1741,6 +1803,14 @@ class InstrumentManagementService(BaseInstrumentManagementService):
                                                                   RT.PlatformDevice)
 
         s_unknown = StatusType.STATUS_UNKNOWN
+
+        # clean up platform agent list as it sometimes includes the device
+        pa = None
+        for agent in extended_platform.platform_agent:
+            if agent.type_ == 'PlatformAgent':
+                pa = agent
+                break
+        extended_platform.platform_agent = pa
 
         # Status computation
         extended_platform.computed.instrument_status = [s_unknown] * len(extended_platform.instrument_devices)
