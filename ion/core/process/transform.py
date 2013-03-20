@@ -95,17 +95,16 @@ class TransformMultiStreamListener(TransformStreamProcess):
         for queue_name in self.queue_names:
             self.subscribers[queue_name] = StreamSubscriber(process=self, exchange_name=queue_name, callback=self.recv_packet)
             self.subscribers[queue_name].start()
-            timeout = self.CFG.get_safe('process.timeout', None)
+
+        timeout = self.CFG.get_safe('process.queue_timeout', None)
         self.queue = gevent.queue.Queue()
         self.multiplex = gevent.spawn(self._process_queue, timeout)
 
     def _process_queue(self, timeout):
         while True:
             try:
-                publish_func,msg = self.queue.get(timeout=timeout)
-                output_streams = self.CFG.get_safe('process.publish_streams', {})
-                for stream_out_id,stream_out_id in output_streams.iteritems():
-                    publish_func(msg, stream_out_id)
+                func,msg,stream_id = self.queue.get(timeout=timeout)
+                func(msg, stream_id)
             except Exception, e:
                 log.exception(e)
                 return

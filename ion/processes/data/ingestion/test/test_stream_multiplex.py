@@ -1,4 +1,4 @@
-import time
+#import time
 import gevent
 import numpy as np
 from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTool
@@ -47,7 +47,7 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         output_stream = self._create_stream(0, output_pdict_id)
         output_stream_id = output_stream['stream_id']
         print >> sys.stderr, "master_stream_id", master_stream_id
-        config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':master_stream_id, 'publish_streams':{str(output_stream_id):output_stream_id}, 'process_type':'stream_process'}
+        config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':master_stream_id, 'publish_streams':{str(output_stream_id):output_stream_id}, 'storage_depth':10, 'process_type':'stream_process'}
         pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
         
         for pdict_id,row in input_streams.iteritems():
@@ -55,27 +55,31 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         
         return (pid, input_streams, output_stream)
     
-    def _make_rdt(self, pdict, now, size=1, factor=1):
+    def _make_rdt(self, pdict, ts, size=1):
         rdt = RecordDictionaryTool(pdict)
         for name,(n,pc) in pdict.iteritems():
             if pdict.temporal_parameter_name == name:
-                rdt[name] = np.arange(now, now+size)
+                rdt[name] = np.arange(ts, ts+size)
             else:
-                rdt[name] = np.array(np.sin(np.arange(size) * 2 * np.pi / 60 * factor))
+                rdt[name] = np.arange(size)
         return rdt 
-    
+
     def _test_two_input_streams(self, data_size):
         pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
         
         pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3, pdict_id1)
-
+        
+        rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], 10, data_size)
+        rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], 20, data_size)
+        
         #validate multiplexed data
         e = gevent.event.Event()
         def cb(msg, sr, sid):
             self.assertEqual(sid, output_stream['stream_id'])
-            #rdt_out = RecordDictionaryTool.load_from_granule(msg)
+            rdt_out = RecordDictionaryTool.load_from_granule(msg)
+            print >> sys.stderr, rdt_out
             #self.assertTrue(np.array_equal(rdt_out['CONDWAT_L0'], rdt['CONDWAT_L0']))
             #self.assertTrue(np.array_equal(rdt_out['TEMPWAT_L0'], rdt['TEMPWAT_L0']))
             #self.assertTrue(np.array_equal(rdt_out['LAT'], rdt2['LAT']))
@@ -86,28 +90,30 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         sub.xn.bind(output_stream['route'].routing_key, getattr(self.container.proc_manager.procs[pid], output_stream['stream_id']).xp)
         self.addCleanup(sub.stop)
         sub.start()
-
-        for i in range(10):
-            if i % 2 == 0:
-                now = time.time()
-                rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], now, data_size)
-                #print >> sys.stderr, "rdt2 time", rdt2['TIME']
-                input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
-                gevent.sleep(1.5)
-            now = time.time()
-            rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], now, data_size, 5000)
-            #print >> sys.stderr, "rdt time", rdt['TIME']
-            input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
-            gevent.sleep(3)
+        
+        ts = 10
+        rdt['TIME'] = np.arange(ts, ts+data_size)
+        print >> sys.stderr, "rdt",rdt['TIME']
+        input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
+        
+        ts = 10
+        rdt2['TIME'] = np.arange(ts, ts+data_size)
+        print >> sys.stderr, "rdt2",rdt2['TIME']
+        input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
+        
+        ts = 20
+        rdt['TIME'] = np.arange(ts, ts+data_size)
+        print >> sys.stderr, "rdt",rdt['TIME']
+        input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
         self.assertTrue(e.wait(4))
         self.addCleanup(self.container.proc_manager.terminate_process, pid);
-
-    def test_two_input_streams_size1(self):
-        self._test_two_input_streams(10)
     
-    #def test_two_input_streams_size10(self):
-    #    self._test_two_input_streams(10)
+    def test_two_input_streams_size1(self):
+        self._test_two_input_streams(1)
+    
+    def test_two_input_streams_size10(self):
+        self._test_two_input_streams(10)
     
     #def test_two_input_streams_size10000(self):
     #    self._test_two_input_streams(10000)
