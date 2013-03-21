@@ -75,7 +75,6 @@ class StreamMultiplex(TransformMultiStreamListener):
             for pname,vals in srdt.iteritems():
                 if pdict_s.temporal_parameter_name != pname:
                     temp[pname] = np.asanyarray([srdt[pname][idx] for idx in indices[sid]])
-        
         result[pdict.temporal_parameter_name] = rdt[pdict.temporal_parameter_name]
         for pname in result.fields:
             if pname != pdict.temporal_parameter_name:
@@ -127,6 +126,7 @@ class StreamMultiplex(TransformMultiStreamListener):
         if input_len == storage_key_len and master_stream == stream_id:
             output_streams = self.CFG.get_safe('process.publish_streams', {})
             for stream_out_id,stream_out_id in output_streams.iteritems(): 
+                
                 stream_def = self._read_stream_def(stream_out_id)
                 pdict_dump = stream_def.parameter_dictionary
                 pdict = ParameterDictionary.load(pdict_dump)
@@ -135,7 +135,7 @@ class StreamMultiplex(TransformMultiStreamListener):
                 indices = self._build_indices(pdict, rdt) 
                 
                 result = self._build_result(pdict, rdt, indices) 
-                
+
                 self.publish(result.to_granule(), stream_out_id)
     
     def publish(self, msg, stream_out_id):

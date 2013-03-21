@@ -9,6 +9,7 @@ from pyon.ion.stream import StandaloneStreamPublisher,StandaloneStreamSubscriber
 from coverage_model import ParameterContext, AxisTypeEnum, QuantityType
 from ion.services.dm.utility.granule_utils import ParameterDictionary
 import uuid
+import sys
 
 @attr('INT')
 class TestStreamMultiplex(IonIntegrationTestCase):
@@ -38,14 +39,14 @@ class TestStreamMultiplex(IonIntegrationTestCase):
             input_streams[pdict_id] = record
             if pdict_id == master_pdict_id:
                 master_stream_id = input_streams[pdict_id]['stream_id']
-        
+
         exchange_pts = [row['exchange_pt'] for pdict_id,row in input_streams.iteritems()]
         input_stream_ids = [row['stream_id'] for pdict_id,row in input_streams.iteritems()]
         output_stream = self._create_stream(0, output_pdict_id)
         output_stream_id = output_stream['stream_id']
         config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':master_stream_id, 'publish_streams':{str(output_stream_id):output_stream_id}, 'storage_depth':10, 'process_type':'stream_process'}
         pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
-        
+
         for pdict_id,row in input_streams.iteritems():
             self.container.proc_manager.procs[pid].subscribers[row['exchange_pt']].xn.bind(row['route'].routing_key, row['publisher'].xp)
         
@@ -61,11 +62,25 @@ class TestStreamMultiplex(IonIntegrationTestCase):
                 rdt[name] = np.arange(size)
         return rdt 
     
+    def _get_stream_input_output_diff(self, stream_out_id):
+        input_pdict_lst = []
+        for stream_id,_ in self.storage.iteritems():
+            stream_def = self._read_stream_def(stream_id)
+            pdict_dump = stream_def.parameter_dictionary
+            pdict = ParameterDictionary.load(pdict_dump)
+            pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name]
+            input_pdict_lst = input_pdict_lst + pdict_lst
+        stream_def = self._read_stream_def(stream_out_id)
+        pdict_dump = stream_def.parameter_dictionary
+        pdict = ParameterDictionary.load(pdict_dump)
+        output_pdict_lst = [name for name,v in pdict.iteritems() if name != pdict.temporal_parameter_name]
+        return set(input_pdict_lst) - set(output_pdict_lst)
+
     def _test_two_input_streams(self, data_size, data_size2):
         pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
-
+        
         pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3, pdict_id1)
         
         ts = 10
@@ -112,8 +127,8 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
         self.assertTrue(e.wait(4))
-        self.addCleanup(self.container.proc_manager.terminate_process, pid);
-
+        self.addCleanup(self.container.proc_manager.terminate_process, pid)
+    
     def test_two_input_streams_size1(self):
         self._test_two_input_streams(1, 1)
 
@@ -125,6 +140,89 @@ class TestStreamMultiplex(IonIntegrationTestCase):
     
     def test_two_input_streams_ireg2(self):
         self._test_two_input_streams(10, 2)
+    
+    def _test_three_input_streams(self, data_size, data_size2, data_size3):
+        pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0'])
+        pdict_id2 = self._get_pdict(['TIME', 'TEMPWAT_L0'])
+        pdict_id3 = self._get_pdict(['TIME', 'LAT', 'LON'])
+        pdict_id4 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
+        
+        pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2,pdict_id3], pdict_id4, pdict_id3)
+        
+        ts = 10
+        publish_time_rdt = np.arange(ts, ts+data_size)
+        
+        ts = 10
+        publish_time_rdt2 = np.arange(ts, ts+data_size2)
+        
+        ts = 20
+        publish_time_rdt3 = np.arange(ts, ts+data_size3) 
+        
+        rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], publish_time_rdt)
+        rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], publish_time_rdt2)
+        rdt3 = self._make_rdt(input_streams[pdict_id3]['pdict'], publish_time_rdt3)
+
+        #validate multiplexed data
+        e = gevent.event.Event()
+        def cb(msg, sr, sid):
+            self.assertEqual(sid, output_stream['stream_id'])
+            
+            rdt_out = RecordDictionaryTool.load_from_granule(msg)
+            self.assertTrue(np.array_equal(rdt_out['LAT'], rdt3['LAT']))
+
+            indices = self.container.proc_manager.procs[pid]._align_temporal_values(publish_time_rdt3, publish_time_rdt)
+            condwat = np.asanyarray([rdt['CONDWAT_L0'][idx] for idx in indices])
+            self.assertTrue(np.array_equal(rdt_out['CONDWAT_L0'], condwat))
+            
+            indices = self.container.proc_manager.procs[pid]._align_temporal_values(publish_time_rdt3, publish_time_rdt2)
+            tempwat = np.asanyarray([rdt2['TEMPWAT_L0'][idx] for idx in indices])
+            self.assertTrue(np.array_equal(rdt_out['TEMPWAT_L0'], tempwat))
+
+            e.set()
+        
+        sub = StandaloneStreamSubscriber('stream_subscriber', cb)
+        sub.xn.bind(output_stream['route'].routing_key, getattr(self.container.proc_manager.procs[pid], output_stream['stream_id']).xp)
+        self.addCleanup(sub.stop)
+        sub.start()
+
+        ts = 10
+        rdt['TIME'] = publish_time_rdt
+        input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
+        
+        ts = 20
+        rdt2['TIME'] = publish_time_rdt2
+        input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
+        
+        ts = 30
+        rdt3['TIME'] = publish_time_rdt3
+        input_streams[pdict_id3]['publisher'].publish(rdt3.to_granule())
+        
+        self.assertTrue(e.wait(4))
+        self.addCleanup(self.container.proc_manager.terminate_process, pid)
+    
+    def test_three_input_streams_size1(self):
+        self._test_three_input_streams(1, 1, 1)
+    
+    def test_three_input_streams_size10(self):
+        self._test_three_input_streams(10, 10, 10)
+    
+    def test_three_input_streams_ireg1(self):
+        self._test_three_input_streams(1, 2, 3)
+    
+    def test_three_input_streams_ireg2(self):
+        self._test_three_input_streams(1, 3, 2)
+    
+    def test_three_input_streams_ireg3(self):
+        self._test_three_input_streams(2, 1, 3)
+    
+    def test_three_input_streams_ireg4(self):
+        self._test_three_input_streams(2, 3, 1)
+    
+    def test_three_input_streams_ireg5(self):
+        self._test_three_input_streams(3, 2, 1)
+    
+    def test_three_input_streams_ireg6(self):
+        self._test_three_input_streams(3, 1, 2)
     
     def _get_pdict(self, filter_values):
         t_ctxt = ParameterContext('TIME', param_type=QuantityType(value_encoding=np.dtype('int64')))
@@ -166,3 +264,6 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         context_ids = [ids[i] for i,ctxt in enumerate(contexts) if ctxt.name in filter_values]
         pdict_name = str(uuid.uuid4()) 
         return self.dataset_management.create_parameter_dictionary(pdict_name, parameter_context_ids=context_ids, temporal_context='TIME')
+
+class OutputStreamDefError(Exception):
+    pass 
