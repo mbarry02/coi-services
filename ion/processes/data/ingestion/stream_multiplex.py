@@ -6,7 +6,6 @@ from pyon.util.memoize import memoize_lru
 from interface.objects import Granule
 from pyon.public import log
 from coverage_model.utils import find_nearest_index
-import sys
 import numpy as np
 
 class StreamMultiplex(TransformMultiStreamListener):
@@ -40,35 +39,32 @@ class StreamMultiplex(TransformMultiStreamListener):
         except KeyError:
             return False
         
-        #print >> sys.stderr, "previous", previous['TIME']
-        #print >> sys.stderr, "current", rdt['TIME']
         previous_max = np.amax(np.asanyarray(previous[pdict.temporal_parameter_name]))
         current_min = np.amin(np.asanyarray(rdt[pdict.temporal_parameter_name]))
         if current_min > previous_max:
             return False
         return True
+    
+    def _align_temporal_values(self, master, dependent):
+        result = []
+        for time_val in master:
+            idx = find_nearest_index(dependent, time_val)   
+            result.append(idx)
+        return result
 
     def _build_indices(self, pdict, rdt):
         indices = {}
         for sid,srdts in self.storage.iteritems():
             #use most recent since it will be in order
             srdt = srdts[-1]
-            #print >> sys.stderr, "stream", sid
             stream_def = self._read_stream_def(sid)
             pdict_dump = stream_def.parameter_dictionary
             pdict_s = ParameterDictionary.load(pdict_dump)
-            for time_val in rdt[pdict.temporal_parameter_name]:
-                #print >> sys.stderr, "time val", time_val, "time", srdt[pdict_s.temporal_parameter_name]
-                idx = find_nearest_index(srdt[pdict_s.temporal_parameter_name], time_val)   
-                try:
-                    indices[sid].append(idx)
-                except KeyError:
-                    indices[sid] = []
-                    indices[sid].append(idx)
+            
+            indices[sid] = self._align_temporal_values(rdt[pdict.temporal_parameter_name], srdt[pdict_s.temporal_parameter_name])
         return indices
     
     def _build_result(self, pdict, rdt, indices):
-        #build result        
         result = RecordDictionaryTool(pdict)
         temp = {}
         for sid,srdts in self.storage.iteritems():
@@ -94,7 +90,6 @@ class StreamMultiplex(TransformMultiStreamListener):
         if not isinstance(msg, Granule):
             log.error('Received a message that is not a granule. %s' % msg)
             return
-
         self.queue.put((self._do_work,msg,stream_id))
     
     def _clear_storage(self):
@@ -110,11 +105,9 @@ class StreamMultiplex(TransformMultiStreamListener):
         master_stream = self.CFG.get_safe('process.master_stream', "")
         rdt = RecordDictionaryTool.load_from_granule(msg)
         
-        print >> sys.stderr, "stream_id", stream_id
         self._clear_storage()
 
         ooo = self._check_out_of_order(stream_id, rdt)
-        print >> sys.stderr, "out of order", ooo
         
         #reset if we received out of order granule
         if ooo == True:
@@ -129,8 +122,6 @@ class StreamMultiplex(TransformMultiStreamListener):
         input_streams = self.CFG.get_safe('process.input_streams', {})
         input_len = len(input_streams)  
         storage_key_len = len(self.storage.keys())
-        print >> sys.stderr, "input_len", input_len
-        print >> sys.stderr, "storage_key_len", storage_key_len
         
         #don't send until we have a series of data from all configured streams
         if input_len == storage_key_len and master_stream == stream_id:
@@ -139,17 +130,12 @@ class StreamMultiplex(TransformMultiStreamListener):
                 stream_def = self._read_stream_def(stream_out_id)
                 pdict_dump = stream_def.parameter_dictionary
                 pdict = ParameterDictionary.load(pdict_dump)
-                print >> sys.stderr, pdict, "master_stream_id == stream_id"
-                #print >> sys.stderr, "result", result 
-                #print >> sys.stderr, pdict.temporal_parameter_name
-                #print >> sys.stderr, rdt[pdict.temporal_parameter_name]
+                
                 #build indices
                 indices = self._build_indices(pdict, rdt) 
-                print >> sys.stderr, "indices", indices
+                
                 result = self._build_result(pdict, rdt, indices) 
-                for k,v in result.iteritems():
-                    print >> sys.stderr, "result",k,result[k]
-                 
+                
                 self.publish(result.to_granule(), stream_out_id)
     
     def publish(self, msg, stream_out_id):

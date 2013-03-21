@@ -1,4 +1,3 @@
-#import time
 import gevent
 import numpy as np
 from ion.services.dm.utility.granule.record_dictionary import RecordDictionaryTool
@@ -10,7 +9,6 @@ from pyon.ion.stream import StandaloneStreamPublisher,StandaloneStreamSubscriber
 from coverage_model import ParameterContext, AxisTypeEnum, QuantityType
 from ion.services.dm.utility.granule_utils import ParameterDictionary
 import uuid
-import sys
 
 @attr('INT')
 class TestStreamMultiplex(IonIntegrationTestCase):
@@ -38,15 +36,13 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         for i,pdict_id in enumerate(input_pdict_ids):
             record = self._create_stream(i+1, pdict_id)
             input_streams[pdict_id] = record
-            print >> sys.stderr, pdict_id,"==",master_pdict_id
             if pdict_id == master_pdict_id:
                 master_stream_id = input_streams[pdict_id]['stream_id']
-
+        
         exchange_pts = [row['exchange_pt'] for pdict_id,row in input_streams.iteritems()]
         input_stream_ids = [row['stream_id'] for pdict_id,row in input_streams.iteritems()]
         output_stream = self._create_stream(0, output_pdict_id)
         output_stream_id = output_stream['stream_id']
-        print >> sys.stderr, "master_stream_id", master_stream_id
         config = {'queue_name':exchange_pts, 'input_streams':input_stream_ids, 'master_stream':master_stream_id, 'publish_streams':{str(output_stream_id):output_stream_id}, 'storage_depth':10, 'process_type':'stream_process'}
         pid = self.container.spawn_process('StreamMultiplex', 'ion.processes.data.ingestion.stream_multiplex', 'StreamMultiplex', {'process':config}) 
         
@@ -55,101 +51,113 @@ class TestStreamMultiplex(IonIntegrationTestCase):
         
         return (pid, input_streams, output_stream)
     
-    def _make_rdt(self, pdict, ts, size=1):
+    def _make_rdt(self, pdict, time_data):
         rdt = RecordDictionaryTool(pdict)
+        size = len(time_data)
         for name,(n,pc) in pdict.iteritems():
             if pdict.temporal_parameter_name == name:
-                rdt[name] = np.arange(ts, ts+size)
+                rdt[name] = time_data
             else:
                 rdt[name] = np.arange(size)
         return rdt 
-
-    def _test_two_input_streams(self, data_size):
+    
+    def _test_two_input_streams(self, data_size, data_size2):
         pdict_id1 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0'])
         pdict_id2 = self._get_pdict(['TIME', 'LAT', 'LON'])
         pdict_id3 = self._get_pdict(['TIME', 'CONDWAT_L0', 'TEMPWAT_L0', 'LAT', 'LON'])
-        
+
         pid,input_streams,output_stream = self._launch_multiplex_process([pdict_id1,pdict_id2], pdict_id3, pdict_id1)
         
-        rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], 10, data_size)
-        rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], 20, data_size)
+        ts = 10
+        publish_time_rdt = np.arange(ts, ts+data_size)
+        
+        ts = 10
+        publish_time_rdt2 = np.arange(ts, ts+data_size2)
+        
+        ts = 20
+        publish_time_2_rdt = np.arange(ts, ts+data_size) 
+        
+        rdt = self._make_rdt(input_streams[pdict_id1]['pdict'], publish_time_rdt)
+        rdt2 = self._make_rdt(input_streams[pdict_id2]['pdict'], publish_time_rdt2)
         
         #validate multiplexed data
         e = gevent.event.Event()
         def cb(msg, sr, sid):
             self.assertEqual(sid, output_stream['stream_id'])
+            
             rdt_out = RecordDictionaryTool.load_from_granule(msg)
-            print >> sys.stderr, rdt_out
-            #self.assertTrue(np.array_equal(rdt_out['CONDWAT_L0'], rdt['CONDWAT_L0']))
-            #self.assertTrue(np.array_equal(rdt_out['TEMPWAT_L0'], rdt['TEMPWAT_L0']))
-            #self.assertTrue(np.array_equal(rdt_out['LAT'], rdt2['LAT']))
-            #self.assertTrue(np.array_equal(rdt_out['LON'], rdt2['LON']))
-            e.set()
+            indices = self.container.proc_manager.procs[pid]._align_temporal_values(publish_time_2_rdt, publish_time_rdt2)
+            
+            self.assertTrue(np.array_equal(rdt_out['CONDWAT_L0'], rdt['CONDWAT_L0']))
 
+            lat = np.asanyarray([rdt2['LAT'][idx] for idx in indices])
+            self.assertTrue(np.array_equal(rdt_out['LAT'], lat))
+            e.set()
+        
         sub = StandaloneStreamSubscriber('stream_subscriber', cb)
         sub.xn.bind(output_stream['route'].routing_key, getattr(self.container.proc_manager.procs[pid], output_stream['stream_id']).xp)
         self.addCleanup(sub.stop)
         sub.start()
         
         ts = 10
-        rdt['TIME'] = np.arange(ts, ts+data_size)
-        print >> sys.stderr, "rdt",rdt['TIME']
+        rdt['TIME'] = publish_time_rdt
         input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
         ts = 10
-        rdt2['TIME'] = np.arange(ts, ts+data_size)
-        print >> sys.stderr, "rdt2",rdt2['TIME']
+        rdt2['TIME'] = publish_time_rdt2
         input_streams[pdict_id2]['publisher'].publish(rdt2.to_granule())
         
         ts = 20
-        rdt['TIME'] = np.arange(ts, ts+data_size)
-        print >> sys.stderr, "rdt",rdt['TIME']
+        rdt['TIME'] = publish_time_2_rdt
         input_streams[pdict_id1]['publisher'].publish(rdt.to_granule())
         
         self.assertTrue(e.wait(4))
         self.addCleanup(self.container.proc_manager.terminate_process, pid);
-    
+
     def test_two_input_streams_size1(self):
-        self._test_two_input_streams(1)
-    
+        self._test_two_input_streams(1, 1)
+
     def test_two_input_streams_size10(self):
-        self._test_two_input_streams(10)
+        self._test_two_input_streams(10, 10)
     
-    #def test_two_input_streams_size10000(self):
-    #    self._test_two_input_streams(10000)
+    def test_two_input_streams_ireg1(self):
+        self._test_two_input_streams(3, 10)
+    
+    def test_two_input_streams_ireg2(self):
+        self._test_two_input_streams(10, 2)
     
     def _get_pdict(self, filter_values):
         t_ctxt = ParameterContext('TIME', param_type=QuantityType(value_encoding=np.dtype('int64')))
         t_ctxt.uom = 'seconds since 01-01-1900'
         t_ctxt.fill_value = -9999
-        t_ctxt_id = self.dataset_management.create_parameter_context(name='TIME', parameter_context=t_ctxt.dump(), parameter_type='quantity<int64>', unit_of_measure=t_ctxt.uom)
+        t_ctxt_id = self.dataset_management.create_parameter_context(name='TIME', parameter_context=t_ctxt.dump(), parameter_type='quantity<int64>')
 
         lat_ctxt = ParameterContext('LAT', param_type=QuantityType(value_encoding=np.dtype('float32')))
         lat_ctxt.axis = AxisTypeEnum.LAT
         lat_ctxt.uom = 'degree_north'
         lat_ctxt.fill_value = -9999
-        lat_ctxt_id = self.dataset_management.create_parameter_context(name='LAT', parameter_context=lat_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=lat_ctxt.uom)
+        lat_ctxt_id = self.dataset_management.create_parameter_context(name='LAT', parameter_context=lat_ctxt.dump(), parameter_type='quantity<float32>')
 
         lon_ctxt = ParameterContext('LON', param_type=QuantityType(value_encoding=np.dtype('float32')))
         lon_ctxt.axis = AxisTypeEnum.LON
         lon_ctxt.uom = 'degree_east'
         lon_ctxt.fill_value = -9999
-        lon_ctxt_id = self.dataset_management.create_parameter_context(name='LON', parameter_context=lon_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=lon_ctxt.uom)
+        lon_ctxt_id = self.dataset_management.create_parameter_context(name='LON', parameter_context=lon_ctxt.dump(), parameter_type='quantity<float32>')
 
         temp_ctxt = ParameterContext('TEMPWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         temp_ctxt.uom = 'deg_C'
         temp_ctxt.fill_value = -9999
-        temp_ctxt_id = self.dataset_management.create_parameter_context(name='TEMPWAT_L0', parameter_context=temp_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=temp_ctxt.uom)
+        temp_ctxt_id = self.dataset_management.create_parameter_context(name='TEMPWAT_L0', parameter_context=temp_ctxt.dump(), parameter_type='quantity<float32>')
 
         cond_ctxt = ParameterContext('CONDWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         cond_ctxt.uom = 'S m-1'
         cond_ctxt.fill_value = -9999
-        cond_ctxt_id = self.dataset_management.create_parameter_context(name='CONDWAT_L0', parameter_context=cond_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=cond_ctxt.uom)
+        cond_ctxt_id = self.dataset_management.create_parameter_context(name='CONDWAT_L0', parameter_context=cond_ctxt.dump(), parameter_type='quantity<float32>')
 
         press_ctxt = ParameterContext('PRESWAT_L0', param_type=QuantityType(value_encoding=np.dtype('float32')))
         press_ctxt.uom = 'dbar'
         press_ctxt.fill_value = -9999
-        press_ctxt_id = self.dataset_management.create_parameter_context(name='PRESWAT_L0', parameter_context=press_ctxt.dump(), parameter_type='quantity<float32>', unit_of_measure=press_ctxt.uom)
+        press_ctxt_id = self.dataset_management.create_parameter_context(name='PRESWAT_L0', parameter_context=press_ctxt.dump(), parameter_type='quantity<float32>')
         
         ids = [t_ctxt_id, lat_ctxt_id, lon_ctxt_id, temp_ctxt_id, cond_ctxt_id, press_ctxt_id]
         ids = ids
