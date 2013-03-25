@@ -7,6 +7,7 @@ from interface.objects import Granule
 from pyon.public import log
 from coverage_model.utils import find_nearest_index
 import numpy as np
+import sys
 
 class StreamMultiplex(TransformMultiStreamListener):
     
@@ -45,13 +46,6 @@ class StreamMultiplex(TransformMultiStreamListener):
             return False
         return True
     
-    def _align_temporal_values(self, master, dependent):
-        result = []
-        for time_val in master:
-            idx = find_nearest_index(dependent, time_val)   
-            result.append(idx)
-        return result
-
     def _build_indices(self, pdict, rdt):
         indices = {}
         for sid,srdts in self.storage.iteritems():
@@ -60,8 +54,7 @@ class StreamMultiplex(TransformMultiStreamListener):
             stream_def = self._read_stream_def(sid)
             pdict_dump = stream_def.parameter_dictionary
             pdict_s = ParameterDictionary.load(pdict_dump)
-            
-            indices[sid] = self._align_temporal_values(rdt[pdict.temporal_parameter_name], srdt[pdict_s.temporal_parameter_name])
+            indices[sid] = [find_nearest_index(srdt[pdict_s.temporal_parameter_name], time_val) for time_val in rdt[pdict.temporal_parameter_name]]
         return indices
     
     def _build_result(self, pdict, rdt, indices):
@@ -74,14 +67,19 @@ class StreamMultiplex(TransformMultiStreamListener):
             srdt = srdts[-1]
             for pname,vals in srdt.iteritems():
                 if pdict_s.temporal_parameter_name != pname:
+                    print >> sys.stderr, "temp pname", pname
                     temp[pname] = np.asanyarray([srdt[pname][idx] for idx in indices[sid]])
+        
         result[pdict.temporal_parameter_name] = rdt[pdict.temporal_parameter_name]
-        for pname in result.fields:
+        print >> sys.stderr, "result fields", result.fields
+        for pname,val in temp.iteritems():
             if pname != pdict.temporal_parameter_name:
                 result[pname] = temp[pname]
         return result
 
     def recv_packet(self, msg, stream_route, stream_id):
+        import sys
+        print >> sys.stderr, "recv_packet"
         if msg == {}:
             log.error('Received empty message from stream: %s', stream_id)
             return
@@ -125,22 +123,31 @@ class StreamMultiplex(TransformMultiStreamListener):
         #don't send until we have a series of data from all configured streams
         if input_len == storage_key_len and master_stream == stream_id:
             output_streams = self.CFG.get_safe('process.publish_streams', {})
+            print >> sys.stderr, "publish streams", output_streams
             for stream_out_id,stream_out_id in output_streams.iteritems(): 
+                try: 
+                    stream_def = self._read_stream_def(stream_out_id)
+                    pdict_dump = stream_def.parameter_dictionary
+                    pdict = ParameterDictionary.load(pdict_dump)
                 
-                stream_def = self._read_stream_def(stream_out_id)
-                pdict_dump = stream_def.parameter_dictionary
-                pdict = ParameterDictionary.load(pdict_dump)
+                    #build indices
+                    indices = self._build_indices(pdict, rdt) 
                 
-                #build indices
-                indices = self._build_indices(pdict, rdt) 
-                
-                result = self._build_result(pdict, rdt, indices) 
-
-                self.publish(result.to_granule(), stream_out_id)
+                    result = self._build_result(pdict, rdt, indices) 
+                    print >> sys.stderr, "publish"
+                    self.publish(result.to_granule(), stream_out_id)
+                except Exception, e:
+                    import traceback
+                    print >> sys.stderr, e
+                    traceback.print_exc()
     
     def publish(self, msg, stream_out_id):
-        publisher = getattr(self, stream_out_id)
-        publisher.publish(msg)
+        print >> sys.stderr, "publish 2"
+        try:
+            publisher = getattr(self, stream_out_id)
+            publisher.publish(msg)
+        except Exception, e:
+            import traceback
+            print >> sys.stderr, e
+            traceback.print_exc()
 
-class OutputStreamDefError(Exception):
-    pass 

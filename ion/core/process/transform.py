@@ -90,12 +90,15 @@ class TransformMultiStreamListener(TransformStreamProcess):
         '''
         Sets up the subscribing endpoint and begins consuming.
         '''
+        import sys
+        print >> sys.stderr, "on_start"
         TransformStreamProcess.on_start(self)
-        self.queue_names = self.CFG.get_safe('process.queue_name',self.id)
-        for queue_name in self.queue_names:
-            self.subscribers[queue_name] = StreamSubscriber(process=self, exchange_name=queue_name, callback=self.recv_packet)
-            self.subscribers[queue_name].start()
-
+        self.exchange_pts = self.CFG.get_safe('process.exchange_pts',self.id)
+        print >> sys.stderr, "exchange_pts ", self.exchange_pts 
+        for exchange_pt in self.exchange_pts:
+            self.subscribers[exchange_pt] = StreamSubscriber(process=self, exchange_name=exchange_pt, callback=self.recv_packet)
+            self.subscribers[exchange_pt].start()
+        
         timeout = self.CFG.get_safe('process.queue_timeout', None)
         self.queue = gevent.queue.Queue()
         self.multiplex = gevent.spawn(self._process_queue, timeout)
