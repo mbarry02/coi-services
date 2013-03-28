@@ -22,8 +22,9 @@ from lxml import etree
 from datetime import datetime
 from ion.util.time_utils import TimeUtils
 from ion.util.geo_utils import GeoUtils
-
 import numpy as np
+from pyon.core.object import IonObjectSerializer
+import simplejson as json
 
 class DataProductManagementService(BaseDataProductManagementService):
     """ @author     Bill Bollenbacher
@@ -308,18 +309,37 @@ class DataProductManagementService(BaseDataProductManagementService):
 
         return self.provenance_results
 
-    def get_data_product_provenance_report(self, data_product_id=''):
+    def get_data_product_provenance_report(self, data_product_id=None):
+        decoder = IonObjectSerializer()
+        
+        validate_is_not_none(data_product_id, 'A data product identifier must be passed to create a provenance report')
+        
+        producer_ids, _ = self.clients.resource_registry.find_objects(subject=data_product_id, predicate=PRED.hasDataProducer, id_only=True)
+        if not len(producer_ids):
+            raise BadRequest('Data product has no known data producers') 
+        
+        result=[]
+        for producer_id in producer_ids:
+            producer = self.clients.resource_registry.read(producer_id) 
+            decoded_msg = decoder.serialize(producer)
+            decoded_msg['parent_id'] = data_product_id
+            result.append(decoded_msg)
+
+        json_dump = json.dumps(result)
+        return json_dump
+
+    #def get_data_product_provenance_report(self, data_product_id=''):
 
         # Retrieve information that characterizes how this data was produced
         # Return in a dictionary
 
-        self.provenance_results = self.get_data_product_provenance(data_product_id)
+        #self.provenance_results = self.get_data_product_provenance(data_product_id)
 
-        results = ''
+        #results = ''
 
-        results = self._write_product_provenance_report(data_product_id, self.provenance_results)
+        #results = self._write_product_provenance_report(data_product_id, self.provenance_results)
 
-        return results
+        #return results
 
     ############################
     #
@@ -829,8 +849,6 @@ class DataProductManagementService(BaseDataProductManagementService):
         ret.status = ComputedValueAvailability.PROVIDED
 
         return ret
-
-
 
 
     def _find_producers(self, data_product_id='', provenance_results=''):

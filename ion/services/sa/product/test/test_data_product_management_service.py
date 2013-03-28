@@ -11,6 +11,11 @@ from interface.services.sa.idata_acquisition_management_service import DataAcqui
 from prototype.sci_data.stream_defs import ctd_stream_definition, SBE37_CDM_stream_definition
 from interface.objects import HdfStorage, CouchStorage, DataProduct, LastUpdate
 
+from interface.services.dm.idataset_management_service import DatasetManagementServiceClient
+from interface.services.dm.ipubsub_management_service import PubsubManagementServiceClient
+
+from ion.services.dm.utility.granule_utils import time_series_domain
+
 from pyon.util.context import LocalContextMixin
 from pyon.core.exception import BadRequest, NotFound, Conflict
 from pyon.public import RT, PRED
@@ -19,7 +24,7 @@ from pyon.util.unit_test import PyonTestCase
 from nose.plugins.attrib import attr
 import unittest
 import time
-
+from pyon.container.cc import Container
 from coverage_model.parameter import ParameterDictionary, ParameterContext
 from coverage_model.parameter_types import QuantityType
 from coverage_model.coverage import GridDomain, GridShape, CRS
@@ -38,16 +43,11 @@ class TestDataProductManagementServiceUnit(PyonTestCase):
     def setUp(self):
         self.clients = self._create_service_mock('data_product_management')
 
-        self.data_product_management_service = DataProductManagementService()
-        self.data_product_management_service.clients = self.clients
-
-        # must call this manually
-        self.data_product_management_service.on_init()
+        self.data_product_management = DataProductManagementService()
 
         self.data_source = Mock()
         self.data_source.name = 'data_source_name'
         self.data_source.description = 'data source desc'
-
 
     @unittest.skip('not working')
     def test_createDataProduct_and_DataProducer_success(self):
@@ -57,7 +57,6 @@ class TestDataProductManagementServiceUnit(PyonTestCase):
         self.clients.resource_registry.create.return_value = ('SOME_RR_ID1', 'Version_1')
         self.clients.data_acquisition_management.assign_data_product.return_value = None
         self.clients.pubsub_management.create_stream.return_value = "stream_id"
-
 
         # Construct temporal and spatial Coordinate Reference System objects
         tcrs = CRS([AxisTypeEnum.TIME])
@@ -122,7 +121,57 @@ class TestDataProductManagementServiceUnit(PyonTestCase):
         self.assertEqual(result, [dp_obj])
         self.clients.resource_registry.find_resources.assert_called_once_with(RT.DataProduct, None, None, False)
 
+@attr('INT', group='sa')
+class TestDataProductManagementServiceInt(IonIntegrationTestCase):
+    
+    def setUp(self):
+        self._start_container()
+        self.container.start_rel_from_url('res/deploy/r2deploy.yml')
+        self.dataset_management = DatasetManagementServiceClient()
+        self.pubsub_management = PubsubManagementServiceClient()
+        self.data_product_management = DataProductManagementServiceClient()
+        self.resource_registry = Container.instance.resource_registry
 
+    def test_data_product_provenance_report(self):
+        available_fields = [
+                'internal_timestamp', 
+                'temp', 
+                'preferred_timestamp', 
+                'time', 
+                'port_timestamp', 
+                'quality_flag', 
+                'lat',
+                'conductivity', 
+                'driver_timestamp', 
+                'lon', 
+                'pressure']
+        
+        instrument_obj = IonObject(RT.InstrumentDevice, name='instrument device', description="instrument device")
+        instrument_id, rev = self.resource_registry.create(instrument_obj)
+        data_product_id = self.make_data_product('ctd_parsed_param_dict', 'ctd plain test', available_fields)
+        self.resource_registry.create_association(instrument_id, PRED.hasOutputProduct, data_product_id)
+
+        data_producer_obj = IonObject(RT.DataProducer, name='data producer for instrument', description="Subordinate DataProducer for InstrumentDevice")
+        data_producer_id, rev = self.resource_registry.create(data_producer_obj) 
+        self.resource_registry.create_association(data_product_id, PRED.hasDataProducer, data_producer_id)
+        
+        result = self.data_product_management.get_data_product_provenance_report(data_product_id)
+        self.assertTrue(result)
+
+    def make_data_product(self, pdict_name, dp_name, available_fields=[]):
+        pdict_id = self.dataset_management.read_parameter_dictionary_by_name(pdict_name, id_only=True)
+        stream_def_id = self.pubsub_management.create_stream_definition('%s stream_def' % dp_name, parameter_dictionary_id=pdict_id, available_fields=available_fields or None)
+        self.addCleanup(self.pubsub_management.delete_stream_definition, stream_def_id)
+        tdom, sdom = time_series_domain()
+        tdom = tdom.dump()
+        sdom = sdom.dump()
+        dp_obj = DataProduct(name=dp_name)
+        dp_obj.temporal_domain = tdom
+        dp_obj.spatial_domain = sdom
+        data_product_id = self.data_product_management.create_data_product(dp_obj, stream_definition_id=stream_def_id)
+        self.addCleanup(self.data_product_management.delete_data_product, data_product_id)
+        return data_product_id
+    
 
 utg = UnitTestGenerator(TestDataProductManagementServiceUnit,
                         DataProductManagementService)
