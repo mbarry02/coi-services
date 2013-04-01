@@ -25,6 +25,7 @@ from ion.util.geo_utils import GeoUtils
 import numpy as np
 from pyon.core.object import IonObjectSerializer
 import simplejson as json
+from collections import deque
 
 class DataProductManagementService(BaseDataProductManagementService):
     """ @author     Bill Bollenbacher
@@ -308,26 +309,49 @@ class DataProductManagementService(BaseDataProductManagementService):
         self._find_producers(data_product_id, self.provenance_results)
 
         return self.provenance_results
-
+    
     def get_data_product_provenance_report(self, data_product_id=None):
-        decoder = IonObjectSerializer()
-        
+        ''' Performs a breadth-first traversal of the provenance for a data product'''
         validate_is_not_none(data_product_id, 'A data product identifier must be passed to create a provenance report')
-        
+         
         producer_ids, _ = self.clients.resource_registry.find_objects(subject=data_product_id, predicate=PRED.hasDataProducer, id_only=True)
         if not len(producer_ids):
             raise BadRequest('Data product has no known data producers') 
-        
-        result=[]
-        for producer_id in producer_ids:
-            producer = self.clients.resource_registry.read(producer_id) 
+         
+        producer_id = producer_ids.pop(0)
+        def traversal(owner_id):
+            def edges(resource_ids=[]):
+                retval = []
+                if not isinstance(resource_ids, list):
+                    resource_ids = list(resource_ids)
+                for resource_id in resource_ids:
+                    retval.extend(self.clients.resource_registry.find_objects(subject=resource_id, predicate=PRED.hasParent,id_only=True)[0])
+                return retval
+            
+            visited_resources = deque([producer_id] + edges([owner_id]))
+            traversal_queue = deque()
+            done = False
+            t = None
+            while not done:
+                t = traversal_queue or deque(visited_resources)
+                traversal_queue = deque()
+                for e in edges(t):
+                    if not e in visited_resources:
+                        visited_resources.append(e)
+                        traversal_queue.append(e)
+                if not len(traversal_queue): done = True
+            return list(visited_resources)
+    
+        decoder = IonObjectSerializer()
+        result = {}
+        for prod_id in traversal(producer_id):
+            producer = self.clients.resource_registry.read(prod_id)
             decoded_msg = decoder.serialize(producer)
-            decoded_msg['parent_id'] = data_product_id
-            result.append(decoded_msg)
-
+            result[prod_id] = decoded_msg
+        
         json_dump = json.dumps(result)
         return json_dump
-
+    
     #def get_data_product_provenance_report(self, data_product_id=''):
 
         # Retrieve information that characterizes how this data was produced

@@ -150,10 +150,10 @@ class TestDataProductManagementServiceInt(IonIntegrationTestCase):
         instrument_id, rev = self.resource_registry.create(instrument_obj)
         data_product_id = self.make_data_product('ctd_parsed_param_dict', 'ctd plain test', available_fields)
         self.resource_registry.create_association(instrument_id, PRED.hasOutputProduct, data_product_id)
-
+        
         data_producer_obj = IonObject(RT.DataProducer, name='data producer for instrument', description="Subordinate DataProducer for InstrumentDevice")
         data_producer_id, rev = self.resource_registry.create(data_producer_obj) 
-        self.resource_registry.create_association(data_product_id, PRED.hasDataProducer, data_producer_id)
+        self.resource_registry.create_association(data_product_id, PRED.hasDataProducer, data_producer_id) 
         
         result = self.data_product_management.get_data_product_provenance_report(data_product_id)
         self.assertTrue(result)
